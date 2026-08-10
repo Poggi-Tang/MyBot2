@@ -1,0 +1,61 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\..\WeAutoCommon\WeAutoCommon.csproj" />
+  </ItemGroup>
+  <PropertyGroup>
+    <TargetFrameworks>
+      net6.0-windows7.0;
+      net7.0-windows;
+      net8.0-windows;
+      net9.0-windows;
+      net10.0-windows;
+    </TargetFrameworks>
+    <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
+  </PropertyGroup>
+  <PropertyGroup>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PackageId>WeChatAuto4x.SDK.vip</PackageId>
+    <PackageVersion>2.0.1</PackageVersion>
+    <Authors>Alex Zhao</Authors>
+    <PackageIcon>icon.png</PackageIcon>
+    <Product>WeChatAuto.SDK</Product>
+    <Description>This is an automation SDK for WeChat 4.x,WeChatAuto.SDK is a modern WeChat automation framework for AI integration.</Description>
+    <Copyright>Copyright 2026 Alex Zhao</Copyright>
+    <RepositoryUrl>https://github.com/scottfly189/WeChatAuto.SDK</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReleaseNotes>update the package icon.</PackageReleaseNotes>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>WeChat, Automation, AI, MCP</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>  
+
+  <ItemGroup>
+    <PackageReference Include="FlaUI.Core" Version="5.0.0" />
+    <PackageReference Include="FlaUI.UIA3" Version="5.0.0" />
+    <PackageReference Include="MessagePack" Version="3.1.7" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.10" />
+    <PackageReference Include="NAudio" Version="2.3.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="OneOf" Version="3.0.271" />
+    <PackageReference Include="RapidOCRLib" Version="0.9.5" />
+    <PackageReference Include="System.Threading.Channels" Version="9.0.10" />
+  </ItemGroup>  
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\WeAutoCommon\WeAutoCommon.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\Images\icon.png" Pack="true" PackagePath="\" />
+  </ItemGroup>  
+
+</Project>

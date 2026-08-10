@@ -1,0 +1,35 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.vs/
+.vscode/
+*.lscache
+artifacts/
+generated_images/
+logs/
+extensions/.candidates/
+runtime.log
+crash.log
+server_*.log
+ui_*.log
+*.tmp
+
+# Local tooling binaries are installed separately and may exceed GitHub limits.
+tools/codex/*.exe
+tools/codex/*SHA256SUMS
+tools/codex/config-schema.json
+
+# All application state is private runtime data.
+data/
+
+# Local secrets stay editable on each machine but must not be committed.
+config.json
+
+# Bundled SDK build and diagnostic output.
+sdk/**/bin/
+sdk/**/obj/
+sdk/**/artifacts/
+sdk/**/logs/
+sdk/**/build-*/
+sdk/**/WebSocketServer/Server/WebSocketServer/

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "abilities": [
+    {
+      "id": "normalize-whitespace",
+      "name": "Whitespace Normalizer",
+      "description": "Collapse repeated whitespace in a UTF-8 text file and write the normalized text to a parameterized output file.",
+      "triggers": [
+        "normalize whitespace",
+        "规范空白",
+        "合并空白",
+        "清理多余空格"
+      ],
+      "recipe": "abilities/normalize-whitespace/recipe.md",
+      "skill": "abilities/normalize-whitespace/SKILL.md",
+      "scripts": [
+        "abilities/normalize-whitespace/scripts/normalize_whitespace.py"
+      ],
+      "validated_at": "2026-08-08T03:02:03+08:00",
+      "validation": "compileall + unittest",
+      "sha256": "eb013676c05f83092ab0de61a64ac265e810d20c49de7a2b1ef95077da62defc",
+      "usage_count": 0,
+      "last_used_at": ""
+    }
+  ]
+}

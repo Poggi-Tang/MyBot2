@@ -1,0 +1,1 @@
+{"reusable":true,"id":"normalize-whitespace","name":"Whitespace Normalizer","description":"Collapse repeated whitespace in a UTF-8 text file and write the normalized text to a parameterized output file.","triggers":["normalize whitespace","规范空白","合并空白","清理多余空格"]}

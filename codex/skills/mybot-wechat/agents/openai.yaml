@@ -1,0 +1,4 @@
+interface:
+  display_name: "MyBot WeChat Operations"
+  short_description: "Run MyBot tasks and reuse verified extension scripts"
+  default_prompt: "Use $mybot-wechat to complete this WeChat task and return a concise verified result."

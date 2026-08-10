@@ -1,0 +1,43 @@
+{
+  "wechat": {
+    "websocket_url": "ws://127.0.0.1:5177/ws",
+    "max_message_mb": 64
+  },
+  "server": {
+    "exe_path": "sdk\\WeChatAuto4_X\\WebSocketServer\\Server\\bin\\Debug\\net10.0-windows\\Server.exe"
+  },
+  "primary": {
+    "provider": "openai",
+    "base_url": "https://api.openai.com",
+    "model": "gpt-5-mini",
+    "api_key": "replace-me"
+  },
+  "backup": {
+    "provider": "openai",
+    "base_url": "https://api.openai.com",
+    "model": "gpt-5-mini",
+    "api_key": "replace-me"
+  },
+  "image": {
+    "provider": "openai",
+    "base_url": "https://api.openai.com",
+    "model": "gpt-image-2",
+    "api_key": "replace-me"
+  },
+  "chat": {
+    "ai_name": "圆子",
+    "auto_start_enabled": false,
+    "auto_start_targets": [],
+    "max_concurrency": 3
+  },
+  "voice": {
+    "enabled": false,
+    "base_url": "http://127.0.0.1:50001"
+  },
+  "codex": {
+    "enabled": false,
+    "executable": "tools\\codex\\codex-x86_64-pc-windows-msvc.exe",
+    "proxy_executable": "tools\\codex\\codex-responses-api-proxy-x86_64-pc-windows-msvc.exe",
+    "timeout_seconds": 900
+  }
+}
