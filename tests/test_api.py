@@ -27,6 +27,11 @@ class _FakeWebSocket:
 
 
 class GatewayConnectionTests(unittest.IsolatedAsyncioTestCase):
+    def test_preview_command_uses_short_stall_detection_timeout(self):
+        self.assertEqual(10, command_timeout("GetVisibleConversations"))
+        self.assertEqual(180, command_timeout("ScanAllStickers"))
+        self.assertEqual(30, command_timeout("SendMessage"))
+
     async def test_command_package_contains_server_enforced_expiry(self):
         packages = []
         gateway = Gateway.__new__(Gateway)

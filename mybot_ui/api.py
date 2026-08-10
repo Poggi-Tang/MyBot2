@@ -23,7 +23,11 @@ DEFAULT_WEBSOCKET_MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 
 
 def command_timeout(function: str) -> int:
-    return 180 if function == "ScanAllStickers" else 30
+    if function == "ScanAllStickers":
+        return 180
+    if function == "GetVisibleConversations":
+        return 10
+    return 30
 
 
 @dataclass

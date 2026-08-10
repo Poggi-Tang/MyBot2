@@ -35,6 +35,7 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             auto_chat_running=True,
             _preview_poll_pending=False,
             _preview_backoff_until=0.0,
+            _preview_timeout_count=0,
             _auto_chat_pending={},
             gateway=SimpleNamespace(
                 connected=True,
@@ -49,12 +50,36 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
         ) as event:
             MainWindow._poll_auto_chat_previews(window)
 
-        self.assertEqual(161.0, window._preview_backoff_until)
+        self.assertEqual(111.0, window._preview_backoff_until)
+        self.assertEqual(1, window._preview_timeout_count)
         event.assert_called_once_with(
             "workflow",
             "preview_poll_backoff",
-            {"seconds": 60, "error": "TimeoutError"},
+            {"seconds": 10, "error": "TimeoutError"},
         )
+
+    def test_second_preview_timeout_recovers_stalled_server(self):
+        recovered = []
+        window = SimpleNamespace(
+            auto_chat_running=True,
+            _preview_poll_pending=False,
+            _preview_backoff_until=0.0,
+            _preview_timeout_count=1,
+            _auto_chat_pending={},
+            gateway=SimpleNamespace(
+                connected=True,
+                call=lambda *_args: GatewayResult(False, error="TimeoutError"),
+            ),
+            account="account",
+            _recover_stalled_server=recovered.append,
+            _run_future=lambda value, callback: callback(value),
+        )
+
+        with patch("mybot_ui.app_v2.time.monotonic", side_effect=[100.0, 101.0]):
+            MainWindow._poll_auto_chat_previews(window)
+
+        self.assertEqual(2, window._preview_timeout_count)
+        self.assertEqual(["TimeoutError"], recovered)
 
     def test_image_preview_fetches_original_instead_of_waiting_forever(self):
         fetched = []

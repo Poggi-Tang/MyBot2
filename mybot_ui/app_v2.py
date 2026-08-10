@@ -459,6 +459,10 @@ class MainWindow(QMainWindow):
         self._preview_snapshots: dict[str, str] = {}
         self._preview_poll_pending = False
         self._preview_backoff_until = 0.0
+        self._preview_timeout_count = 0
+        self._server_auto_recovery_in_progress = False
+        self._server_auto_recovery_last_at = 0.0
+        self._resume_auto_chat_after_reconnect = False
         self._preview_image_fetches: set[str] = set()
         self._preview_image_retries: dict[str, tuple[str, int, float]] = {}
         self._preview_image_completed: dict[str, str] = {}
@@ -1342,9 +1346,14 @@ class MainWindow(QMainWindow):
 
     def _restart_server(self) -> None:
         if not self.restart_server_button.isEnabled():
+            self._server_auto_recovery_in_progress = False
             return
+        self._resume_auto_chat_after_reconnect = (
+            self._resume_auto_chat_after_reconnect or self.auto_chat_running
+        )
         executable = self._server_executable()
         if not executable.is_file():
+            self._server_auto_recovery_in_progress = False
             QMessageBox.warning(self, "Server 不存在", f"找不到 Server.exe：\n{executable}")
             return
         self.restart_server_button.setEnabled(False)
@@ -1379,6 +1388,7 @@ class MainWindow(QMainWindow):
             self.restart_server_button.setEnabled(True)
             self.connect_button.setEnabled(True)
             if not result.ok:
+                self._server_auto_recovery_in_progress = False
                 self._append_chat("系统", f"Server 重启失败：{result.error}")
                 self.statusBar().showMessage("Server 重启失败", 6000)
                 return
@@ -1387,6 +1397,22 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(350, self._connect)
 
         self._run_future(future, finished)
+
+    def _recover_stalled_server(self, error: str) -> None:
+        now = time.monotonic()
+        if self._server_auto_recovery_in_progress:
+            return
+        if now - self._server_auto_recovery_last_at < 60.0:
+            return
+        self._server_auto_recovery_in_progress = True
+        self._server_auto_recovery_last_at = now
+        self._resume_auto_chat_after_reconnect = self.auto_chat_running
+        operations.event("workflow", "server_stall_auto_recovery", {
+            "error": error,
+            "preview_timeout_count": self._preview_timeout_count,
+        })
+        self._append_chat("自动聊天", "连续读取会话超时，正在自动重启 Server 并恢复接管")
+        QTimer.singleShot(0, self._restart_server)
 
     @staticmethod
     def _restart_application_helper(process_id: int, app_root: Path) -> list[str]:
@@ -1547,7 +1573,12 @@ class MainWindow(QMainWindow):
         self.account = self.gateway.clients[0] if self.gateway.clients else ""
         self._set_connection(True, f"已连接 {self.gateway.uri}")
         self._append_chat("系统", f"已连接测试账号：{self.account}")
-        should_resume_auto_chat = self.auto_chat_running
+        should_resume_auto_chat = (
+            self.auto_chat_running or self._resume_auto_chat_after_reconnect
+        )
+        self._resume_auto_chat_after_reconnect = False
+        self._server_auto_recovery_in_progress = False
+        self._preview_timeout_count = 0
 
         def listener_reset(_result: GatewayResult) -> None:
             self._listener_targets.clear()
@@ -2302,13 +2333,21 @@ class MainWindow(QMainWindow):
             if not self.auto_chat_running:
                 return
             if not result.ok:
-                self._preview_backoff_until = time.monotonic() + 60.0
+                is_timeout = "timeout" in str(result.error).casefold()
+                self._preview_timeout_count = (
+                    self._preview_timeout_count + 1 if is_timeout else 0
+                )
+                backoff_seconds = 10 if is_timeout else 60
+                self._preview_backoff_until = time.monotonic() + backoff_seconds
                 operations.event("workflow", "preview_poll_backoff", {
-                    "seconds": 60,
+                    "seconds": backoff_seconds,
                     "error": result.error,
                 })
+                if is_timeout and self._preview_timeout_count >= 2:
+                    self._recover_stalled_server(str(result.error))
                 return
             self._preview_backoff_until = 0.0
+            self._preview_timeout_count = 0
             if not isinstance(result.value, list):
                 return
             image_completed = getattr(self, "_preview_image_completed", None)
