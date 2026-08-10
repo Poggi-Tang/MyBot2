@@ -298,6 +298,81 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
                 for call in finish.call_args_list
             ))
 
+    def test_manual_restart_preserves_preview_baseline_for_messages_received_while_stopped(self):
+        snapshots = {"测试联系人甲": "旧消息|13:35"}
+        timer = SimpleNamespace(start=lambda: None)
+        window = SimpleNamespace(
+            _selected_auto_chat_targets=lambda: {"测试联系人甲"},
+            _auto_selection_save_timer=SimpleNamespace(stop=lambda: None),
+            _persist_auto_chat_selection=lambda: None,
+            _model_config=lambda: ModelConfig(model="gpt-5.6-sol"),
+            account="测试账号",
+            gateway=SimpleNamespace(connected=True),
+            _set_auto_chat_ui_state=lambda *_args, **_kwargs: None,
+            _listener_targets={"测试联系人甲"},
+            _run_gateway_sequence=lambda _calls, callback: callback(GatewayResult(True, True)),
+            _auto_chat_session=2,
+            auto_chat_running=False,
+            _append_chat=lambda *_args: None,
+            _preview_snapshots=snapshots,
+            _preview_poll_pending=False,
+            _preview_backoff_until=0.0,
+            _auto_chat_sent_contents={},
+            _preview_suppressed_until={},
+            _message_cursor=ListenerMessageCursor(),
+            _preview_timer=timer,
+        )
+
+        with patch("mybot_ui.app_v2.operations.start", return_value="span"), patch(
+            "mybot_ui.app_v2.operations.finish"
+        ):
+            MainWindow._start_auto_chat(window)
+
+        self.assertTrue(window.auto_chat_running)
+        self.assertEqual({"测试联系人甲": "旧消息|13:35"}, window._preview_snapshots)
+
+    def test_first_start_captures_baseline_before_enabling_listener(self):
+        calls = []
+        preview = GatewayResult(True, [{
+            "conversation_title": "测试联系人甲",
+            "conversation_content": "启动前的消息",
+            "time": "13:35",
+        }])
+        window = SimpleNamespace(
+            _selected_auto_chat_targets=lambda: {"测试联系人甲"},
+            _auto_selection_save_timer=SimpleNamespace(stop=lambda: None),
+            _persist_auto_chat_selection=lambda: None,
+            _model_config=lambda: ModelConfig(model="gpt-5.6-sol"),
+            account="测试账号",
+            gateway=SimpleNamespace(
+                connected=True,
+                call=lambda _account, function, _options, **kwargs: calls.append((function, kwargs)) or preview,
+            ),
+            _run_future=lambda value, callback: callback(value),
+            _set_auto_chat_ui_state=lambda *_args, **_kwargs: None,
+            _listener_targets={"测试联系人甲"},
+            _run_gateway_sequence=lambda _calls, callback: callback(GatewayResult(True, True)),
+            _auto_chat_session=2,
+            auto_chat_running=False,
+            _append_chat=lambda *_args: None,
+            _preview_snapshots={},
+            _preview_poll_pending=False,
+            _preview_backoff_until=0.0,
+            _auto_chat_sent_contents={},
+            _preview_suppressed_until={},
+            _message_cursor=ListenerMessageCursor(),
+            _preview_timer=SimpleNamespace(start=lambda: None),
+        )
+
+        with patch("mybot_ui.app_v2.operations.start", return_value="span"), patch(
+            "mybot_ui.app_v2.operations.finish"
+        ), patch("mybot_ui.app_v2.operations.event"):
+            MainWindow._start_auto_chat(window)
+
+        self.assertEqual([("GetVisibleConversations", {"timeout_seconds": 20})], calls)
+        self.assertEqual({"测试联系人甲": "启动前的消息|13:35"}, window._preview_snapshots)
+        self.assertTrue(window.auto_chat_running)
+
     def test_listener_and_preview_surfaces_dedupe_same_bubble(self):
         window = SimpleNamespace(
             _selected_auto_chat_targets=lambda: {"人工智能自动化技术讨论群"},

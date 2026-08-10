@@ -2154,7 +2154,6 @@ class MainWindow(QMainWindow):
             self.auto_chat_running = True
             self._set_auto_chat_ui_state("running", len(targets))
             self._append_chat("自动聊天", "已开始接管：" + "、".join(sorted(targets)))
-            self._preview_snapshots.clear()
             self._preview_poll_pending = False
             self._preview_backoff_until = 0.0
             self._auto_chat_sent_contents.clear()
@@ -2164,25 +2163,73 @@ class MainWindow(QMainWindow):
             self._append_chat("自动聊天", "监听已启动，预览列表每 5 秒进行一次兜底检查")
             operations.finish(span, success=True, result={"targets": sorted(targets)})
 
-        if not self._listener_targets:
-            options = build_options(
-                "AddMessageListener",
-                {
-                    "targets": sorted(targets),
-                    "open": False,
-                    "monitor_read_conversations": True,
-                    "file_save_directory": str(self.attachment_store.root.resolve()),
-                },
-            )
-            self._run_future(self.gateway.call(self.account, "AddMessageListener", options), activated)
+        def activate_listener() -> None:
+            if not self._listener_targets:
+                options = build_options(
+                    "AddMessageListener",
+                    {
+                        "targets": sorted(targets),
+                        "open": False,
+                        "monitor_read_conversations": True,
+                        "file_save_directory": str(self.attachment_store.root.resolve()),
+                    },
+                )
+                self._run_future(self.gateway.call(self.account, "AddMessageListener", options), activated)
+                return
+
+            changes = [
+                *(('RemoveListeningFriend', build_options('RemoveListeningFriend', {'who': who})) for who in sorted(self._listener_targets - targets)),
+                *(('AddListeningFriend', build_options('AddListeningFriend', {'who': who})) for who in sorted(targets - self._listener_targets)),
+                ("ResumeMessageListener", ""),
+            ]
+            self._run_gateway_sequence(changes, activated)
+
+        missing_baselines = targets - set(self._preview_snapshots)
+        if not missing_baselines:
+            activate_listener()
             return
 
-        changes = [
-            *(('RemoveListeningFriend', build_options('RemoveListeningFriend', {'who': who})) for who in sorted(self._listener_targets - targets)),
-            *(('AddListeningFriend', build_options('AddListeningFriend', {'who': who})) for who in sorted(targets - self._listener_targets)),
-            ("ResumeMessageListener", ""),
-        ]
-        self._run_gateway_sequence(changes, activated)
+        def baseline_loaded(result: GatewayResult) -> None:
+            if result.ok and isinstance(result.value, list):
+                for item in result.value:
+                    if not isinstance(item, dict):
+                        continue
+                    title = str(
+                        item.get("conversation_title")
+                        or item.get("ConversationTitle")
+                        or item.get("title")
+                        or ""
+                    ).strip()
+                    if title not in missing_baselines:
+                        continue
+                    content = str(
+                        item.get("conversation_content")
+                        or item.get("ConversationContent")
+                        or item.get("content")
+                        or ""
+                    ).strip()
+                    time_label = item.get("time") or item.get("Time") or ""
+                    self._preview_snapshots[title] = f"{content}|{time_label}"
+                operations.event("workflow", "auto_chat_start_baseline", {
+                    "targets": sorted(missing_baselines),
+                    "captured": sorted(missing_baselines & set(self._preview_snapshots)),
+                })
+            else:
+                operations.event("workflow", "auto_chat_start_baseline_failed", {
+                    "targets": sorted(missing_baselines),
+                    "error": result.error,
+                })
+            activate_listener()
+
+        self._run_future(
+            self.gateway.call(
+                self.account,
+                "GetVisibleConversations",
+                "",
+                timeout_seconds=20,
+            ),
+            baseline_loaded,
+        )
 
     def _run_gateway_sequence(self, calls: list[tuple[str, Any]], callback: Callable[[GatewayResult], None]) -> None:
         if not calls:

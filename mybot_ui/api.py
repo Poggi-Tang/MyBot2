@@ -99,8 +99,15 @@ class Gateway:
     def disconnect(self) -> Future:
         return self.submit(self._disconnect())
 
-    def call(self, account: str, function: str, options: Any = "") -> Future:
-        return self.submit(self._call(account, function, options))
+    def call(
+        self,
+        account: str,
+        function: str,
+        options: Any = "",
+        *,
+        timeout_seconds: int | None = None,
+    ) -> Future:
+        return self.submit(self._call(account, function, options, timeout_seconds=timeout_seconds))
 
     async def _connect(self) -> GatewayResult:
         request_id = uuid.uuid4().hex
@@ -181,9 +188,16 @@ class Gateway:
             for listener in self._listeners:
                 listener({"type": "connection_error", "data": str(exc)})
 
-    async def _call(self, account: str, function: str, options: Any = "") -> GatewayResult:
+    async def _call(
+        self,
+        account: str,
+        function: str,
+        options: Any = "",
+        *,
+        timeout_seconds: int | None = None,
+    ) -> GatewayResult:
         request_id = uuid.uuid4().hex
-        timeout_seconds = command_timeout(function)
+        timeout_seconds = max(1, int(timeout_seconds or command_timeout(function)))
         span = operations.start(
             "gateway",
             function,
