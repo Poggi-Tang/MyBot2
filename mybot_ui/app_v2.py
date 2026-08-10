@@ -2200,34 +2200,56 @@ class MainWindow(QMainWindow):
         self._run_future(self.gateway.call(self.account, function, options), done)
 
     def _stop_auto_chat(self) -> None:
+        if not self.auto_chat_running:
+            return
         target_count = len(self._selected_auto_chat_targets())
         span = operations.start(
             "workflow",
             "auto_chat_stop",
             details={"account": self.account, "target_count": target_count},
         )
-        self._set_auto_chat_ui_state("stopping", target_count)
+
+        # Stop locally before asking the SDK to pause. The SDK command queue may
+        # itself be stalled, but no late model/tool result may remain sendable.
+        self._auto_chat_session += 1
+        self.auto_chat_running = False
+        self._resume_auto_chat_after_reconnect = False
+        self._preview_timer.stop()
+        self._preview_poll_pending = False
+        self._auto_chat_pending.clear()
+        self._auto_chat_active_tasks.clear()
+        self._auto_chat_queues.clear()
+        for reply_span in self._auto_reply_spans.values():
+            operations.finish(reply_span, success=False, error="自动聊天已停止")
+        self._auto_reply_spans.clear()
+        self._set_auto_chat_ui_state("stopped")
+        self._append_chat("自动聊天", "已停止消息接管")
+        operations.event("workflow", "auto_chat_stopped_locally", {
+            "account": self.account,
+            "target_count": target_count,
+            "session": self._auto_chat_session,
+        })
 
         def stopped(result: GatewayResult) -> None:
             if not result.ok or result.value is False:
                 error = str(result.error or result.value or "未知错误")
-                operations.finish(span, success=False, error=error)
-                self._set_auto_chat_ui_state("running", target_count)
-                self._append_chat("自动聊天", f"停止监听失败：{error}")
+                self._append_chat("自动聊天", f"本地已停止；服务端暂停监听失败：{error}")
+                operations.finish(span, success=True, result={
+                    "target_count": target_count,
+                    "local_stopped": True,
+                    "listener_paused": False,
+                    "warning": error,
+                })
                 return
-            self._auto_chat_session += 1
-            self.auto_chat_running = False
-            self._preview_timer.stop()
-            self._preview_poll_pending = False
-            self._auto_chat_pending.clear()
-            self._auto_chat_active_tasks.clear()
-            self._auto_chat_queues.clear()
-            for reply_span in self._auto_reply_spans.values():
-                operations.finish(reply_span, success=False, error="自动聊天已停止")
-            self._auto_reply_spans.clear()
-            self._set_auto_chat_ui_state("stopped")
-            self._append_chat("自动聊天", "已停止消息接管")
-            operations.finish(span, success=True, result={"target_count": target_count})
+            operations.finish(span, success=True, result={
+                "target_count": target_count,
+                "local_stopped": True,
+                "listener_paused": True,
+            })
+
+        if not self.gateway.connected:
+            stopped(GatewayResult(False, error="WebSocket Server 未连接"))
+            return
         self._run_future(self.gateway.call(self.account, "PauseMessageListener", ""), stopped)
 
     def _handle_auto_chat_event(self, event: dict[str, Any]) -> None:

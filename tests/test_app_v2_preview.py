@@ -244,6 +244,60 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
         self.assertTrue(window.auto_chat_running)
         self.assertEqual([{"preserve_session": True}], starts)
 
+    def test_stop_is_immediate_even_when_server_pause_fails_later(self):
+        callbacks = []
+        calls = []
+        states = []
+        messages = []
+        timer = SimpleNamespace(stop=lambda: calls.append("timer_stopped"))
+        window = SimpleNamespace(
+            auto_chat_running=True,
+            account="圆子",
+            _auto_chat_session=7,
+            _resume_auto_chat_after_reconnect=True,
+            _preview_timer=timer,
+            _preview_poll_pending=True,
+            _auto_chat_pending={"测试联系人甲": 1},
+            _auto_chat_active_tasks={"task"},
+            _auto_chat_queues={"测试联系人甲": deque(["message"])},
+            _auto_reply_spans={"task": "reply-span"},
+            _selected_auto_chat_targets=lambda: {"测试联系人甲"},
+            _set_auto_chat_ui_state=lambda state, *_args: states.append(state),
+            _append_chat=lambda role, text: messages.append((role, text)),
+            gateway=SimpleNamespace(
+                connected=True,
+                call=lambda account, function, options: (
+                    calls.append((account, function, options)) or object()
+                ),
+            ),
+            _run_future=lambda _future, callback: callbacks.append(callback),
+        )
+
+        with patch("mybot_ui.app_v2.operations.start", return_value="stop-span"), patch(
+            "mybot_ui.app_v2.operations.finish"
+        ) as finish, patch("mybot_ui.app_v2.operations.event"):
+            MainWindow._stop_auto_chat(window)
+
+            self.assertFalse(window.auto_chat_running)
+            self.assertEqual(8, window._auto_chat_session)
+            self.assertFalse(window._resume_auto_chat_after_reconnect)
+            self.assertFalse(window._preview_poll_pending)
+            self.assertEqual({}, window._auto_chat_pending)
+            self.assertEqual(set(), window._auto_chat_active_tasks)
+            self.assertEqual({}, window._auto_chat_queues)
+            self.assertEqual({}, window._auto_reply_spans)
+            self.assertEqual(["stopped"], states)
+
+            callbacks[0](GatewayResult(False, error="TimeoutError"))
+
+            self.assertFalse(window.auto_chat_running)
+            self.assertEqual(["stopped"], states)
+            self.assertIn(("自动聊天", "本地已停止；服务端暂停监听失败：TimeoutError"), messages)
+            self.assertTrue(any(
+                call.kwargs.get("result", {}).get("local_stopped") is True
+                for call in finish.call_args_list
+            ))
+
     def test_listener_and_preview_surfaces_dedupe_same_bubble(self):
         window = SimpleNamespace(
             _selected_auto_chat_targets=lambda: {"人工智能自动化技术讨论群"},

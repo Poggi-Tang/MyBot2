@@ -27,6 +27,8 @@ def command_timeout(function: str) -> int:
         return 180
     if function == "GetVisibleConversations":
         return 10
+    if function == "PauseMessageListener":
+        return 5
     return 30
 
 

@@ -29,6 +29,7 @@ class _FakeWebSocket:
 class GatewayConnectionTests(unittest.IsolatedAsyncioTestCase):
     def test_preview_command_uses_short_stall_detection_timeout(self):
         self.assertEqual(10, command_timeout("GetVisibleConversations"))
+        self.assertEqual(5, command_timeout("PauseMessageListener"))
         self.assertEqual(180, command_timeout("ScanAllStickers"))
         self.assertEqual(30, command_timeout("SendMessage"))
 
