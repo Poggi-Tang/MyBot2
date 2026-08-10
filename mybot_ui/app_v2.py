@@ -712,7 +712,6 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(26, 22, 26, 20)
         layout.setSpacing(14)
         title_row = QHBoxLayout()
-        title_row.addWidget(label("自动聊天", "pageTitle"))
         title_row.addWidget(label("选择会话后，AI 会接管消息并自动回复", "muted"), 0, Qt.AlignBottom)
         title_row.addStretch()
         self.auto_chat_status = label("未运行", "muted")
