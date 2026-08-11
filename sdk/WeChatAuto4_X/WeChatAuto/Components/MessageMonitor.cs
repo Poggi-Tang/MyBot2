@@ -39,7 +39,6 @@ using System.Reflection.PortableExecutable;
 using System.Security.Cryptography;
 using System.Text;
 using System.Runtime.InteropServices;
-
 namespace WeChatAuto.Components
 {
     /// <summary>
@@ -73,7 +72,6 @@ namespace WeChatAuto.Components
         private int systemListnerStartedFlag = 0;   //系统消息监听启用标识
         private readonly List<Thread> _SystemMonitors = new List<Thread>();
         #endregion
-
 
         /// <summary>
         /// <para>构造器，不应该自行调用</para>
@@ -1932,122 +1930,20 @@ namespace WeChatAuto.Components
             return false;
         }
 
-        // 得到语音实际内容.
+        // WeChat performs voice transcription when its own automatic transcription
+        // setting is enabled. MyBot only reads the resulting UIA Name and never
+        // clicks the voice bubble or opens its context menu.
         private string __GetVoiceContent(int voiceDelay, AutomationElement item, decimal ratio, UIA3Automation automation, AutomationElement subWin, MessageMonitorOptions options)
         {
             if (options == null || !options.FetchVoiceChat)
                 return "语音";
-
-            var opened = __ClickInlineVoiceToText(item);
-            if (!opened)
-                opened = __OpenVoiceToText(item, ratio, subWin, false);
-            if (!opened)
-                opened = __OpenVoiceToText(item, ratio, subWin, true);
-            if (!opened)
-                return "语音";
-
-            var timeoutMilliseconds = Math.Min(15_000, Math.Max(5_000, (voiceDelay + 4) * 1_000));
-            var stopwatch = Stopwatch.StartNew();
-            var stableText = string.Empty;
-            var stableSince = 0L;
-            while (stopwatch.ElapsedMilliseconds < timeoutMilliseconds)
-            {
-                RandomWait.Wait(120, 180);
-                var text = __ExtractVoiceTranscription(item.Name);
-                if (string.IsNullOrWhiteSpace(text))
-                    continue;
-                if (!string.Equals(text, stableText, StringComparison.Ordinal))
-                {
-                    stableText = text;
-                    stableSince = stopwatch.ElapsedMilliseconds;
-                    continue;
-                }
-                // WeChat appends partial text to the same UIA Name while it is
-                // transcribing. Return only after the appended value settles.
-                if (stopwatch.ElapsedMilliseconds - stableSince >= 650)
-                    return stableText;
-            }
-            return string.IsNullOrWhiteSpace(stableText) ? "语音" : stableText;
+            return ReadVisibleVoiceContent(item, "语音");
         }
 
-        internal string TranscribeVisibleVoiceCore(AutomationElement item)
+        internal string ReadVisibleVoiceContent(AutomationElement item, string fallback = "语音")
         {
-            var operationId = Guid.NewGuid().ToString("N");
-            var stopwatch = Stopwatch.StartNew();
-            var original = item?.Name?.Trim() ?? string.Empty;
-            if (item == null || item.ClassName != "mmui::ChatVoiceItemView")
-                return original;
-            var existing = __ExtractVoiceTranscription(original);
-            if (!string.IsNullOrWhiteSpace(existing))
-                return existing;
-
-            VoiceTranscriptionOperationLog.Write(operationId, "started", stopwatch, details: new Dictionary<string, object>
-            {
-                ["voice_name"] = original,
-                ["bounds"] = __DescribeBounds(item)
-            });
-
-            var durationMatch = Regex.Match(original, @"^语音(?<seconds>\d+)[\""”″]?秒");
-            var duration = durationMatch.Success && int.TryParse(durationMatch.Groups["seconds"].Value, out var seconds)
-                ? seconds
-                : 0;
-            var ratio = DpiHelper.GetScaleForWindow(_Client.MainWindow.Properties.NativeWindowHandle);
-            var method = "inline_ocr";
-            var opened = __ClickInlineVoiceToText(item);
-            if (!opened)
-            {
-                method = "context_menu";
-                opened = __OpenVoiceToText(item, ratio, _Client.MainWindow, false)
-                    || __OpenVoiceToText(item, ratio, _Client.MainWindow, true);
-            }
-            if (!opened)
-            {
-                VoiceTranscriptionOperationLog.Write(operationId, "finished", stopwatch, false, new Dictionary<string, object>
-                {
-                    ["method"] = "none",
-                    ["result"] = original
-                });
-                return original;
-            }
-
-            VoiceTranscriptionOperationLog.Write(operationId, "transcription_clicked", stopwatch, true, new Dictionary<string, object>
-            {
-                ["method"] = method
-            });
-
-            var timeoutMilliseconds = Math.Min(12_000, Math.Max(4_000, (duration + 3) * 1_000));
-            var transcriptionStartMilliseconds = stopwatch.ElapsedMilliseconds;
-            var stableText = string.Empty;
-            var stableSince = 0L;
-            while (stopwatch.ElapsedMilliseconds - transcriptionStartMilliseconds < timeoutMilliseconds)
-            {
-                Thread.Sleep(100);
-                var text = __ExtractVoiceTranscription(item.Name);
-                if (string.IsNullOrWhiteSpace(text))
-                    continue;
-                if (!string.Equals(text, stableText, StringComparison.Ordinal))
-                {
-                    stableText = text;
-                    stableSince = stopwatch.ElapsedMilliseconds;
-                    continue;
-                }
-                if (stopwatch.ElapsedMilliseconds - stableSince >= 350)
-                {
-                    VoiceTranscriptionOperationLog.Write(operationId, "finished", stopwatch, true, new Dictionary<string, object>
-                    {
-                        ["method"] = method,
-                        ["text"] = stableText
-                    });
-                    return stableText;
-                }
-            }
-            var finalText = string.IsNullOrWhiteSpace(stableText) ? original : stableText;
-            VoiceTranscriptionOperationLog.Write(operationId, "finished", stopwatch, !string.IsNullOrWhiteSpace(stableText), new Dictionary<string, object>
-            {
-                ["method"] = method,
-                ["text"] = finalText
-            });
-            return finalText;
+            var text = __ExtractVoiceTranscription(item?.Name?.Trim() ?? string.Empty);
+            return string.IsNullOrWhiteSpace(text) ? fallback : text;
         }
 
         private void __FetchFile(
@@ -2273,94 +2169,6 @@ namespace WeChatAuto.Components
             if (!directory.StartsWith(fullRoot.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("附件保存目录越界");
             return Path.Combine(directory, Path.GetFileName(fileName));
-        }
-
-        private bool __OpenVoiceToText(AutomationElement item, decimal ratio, AutomationElement subWin, bool useRightSide)
-        {
-            var horizontalOffset = (int)(77 * ratio);
-            var x = useRightSide
-                ? item.BoundingRectangle.X + item.BoundingRectangle.Width - horizontalOffset
-                : item.BoundingRectangle.X + horizontalOffset;
-            var y = item.BoundingRectangle.Y + Math.Min(
-                item.BoundingRectangle.Height / 2,
-                (int)(28 * ratio));
-            SupperMouseKey.MoveTo(new Point(x, y).Confusion(4, 3));
-            RandomWait.Wait(100, 250);
-            SupperMouseKey.RightClick();
-
-            const string path = "/Window[@ClassName='mmui::XMenu'][@Name='Weixin']";
-            var popupMenuRetry = Retry.WhileNull(
-                () => _Client.MainWindow.Automation.GetDesktop().FindFirstByXPath(path)
-                    ?? subWin.FindFirstByXPath(path),
-                TimeSpan.FromSeconds(1),
-                TimeSpan.FromMilliseconds(120));
-            if (!popupMenuRetry.Success)
-                return false;
-
-            var menuItem = popupMenuRetry.Result.FindFirstChild(
-                cf => cf.ByControlType(ControlType.MenuItem).And(cf.ByName("语音转文字")));
-            if (menuItem == null)
-            {
-                RandomWait.Wait(100, 200);
-                return false;
-            }
-            SupperMouseKey.MoveTo(menuItem.BoundingRectangle.Center().Confusion(8, 2));
-            RandomWait.Wait(100, 250);
-            SupperMouseKey.LeftClick();
-            return true;
-        }
-
-        private bool __ClickInlineVoiceToText(AutomationElement item)
-        {
-            try
-            {
-                using var mat = _Client.OcrEngee.GetMatFromElement(item);
-                // Incoming voice bubbles and their inline action are on the
-                // left. Cropping the otherwise full-width chat row makes OCR
-                // substantially faster and avoids unrelated text to the right.
-                var cropWidth = Math.Min(mat.Width, Math.Max(320, mat.Height * 8));
-                using var region = new Mat(mat, new Rectangle(0, 0, cropWidth, mat.Height));
-                using var bitmap = region.ToBitmap();
-                var result = _Client.OcrEngee.Detect(
-                    bitmap,
-                    0,
-                    Math.Max(bitmap.Width, bitmap.Height),
-                    0.3f,
-                    0.3f,
-                    1.6f,
-                    false,
-                    false,
-                    isTest: false);
-                var block = result.TextBlocks.FirstOrDefault(value =>
-                {
-                    var text = Regex.Replace(value.Text ?? string.Empty, @"\s+", string.Empty);
-                    return text.Contains("转文字", StringComparison.Ordinal)
-                        || "转文字".Contains(text, StringComparison.Ordinal) && text.Length >= 2;
-                });
-                if (block == null || block.BoxPoints == null || block.BoxPoints.Count < 3)
-                    return false;
-
-                var bounds = item.BoundingRectangle;
-                var centerX = block.BoxPoints[0].X + (block.BoxPoints[2].X - block.BoxPoints[0].X) / 2.0;
-                var centerY = block.BoxPoints[0].Y + (block.BoxPoints[2].Y - block.BoxPoints[0].Y) / 2.0;
-                var scaleX = bounds.Width / Math.Max(1.0, bitmap.Width);
-                var scaleY = bounds.Height / Math.Max(1.0, bitmap.Height);
-                var point = new Point(
-                    bounds.X + (int)Math.Round(centerX * scaleX),
-                    bounds.Y + (int)Math.Round(centerY * scaleY));
-                if (!bounds.Contains(point))
-                    return false;
-
-                Mouse.Position = point;
-                Mouse.LeftClick();
-                Thread.Sleep(80);
-                return true;
-            }
-            catch (Exception exception)
-            {
-                _Logger.Warn("OCR 定位语音转文字按钮失败。", exception);
-                return false;
-            }
         }
 
         private static string __ExtractVoiceTranscription(string itemName)

@@ -74,7 +74,7 @@ cd MyBot2
 - `tests/`：应用离线测试和显式在线探针。
 - `data/`、`logs/`：首次运行后生成的私人数据，不进入版本库。
 
-更多信息见 [环境准备](docs/ENVIRONMENT.md)、[开发与测试](docs/DEVELOPMENT.md)、[架构](docs/ARCHITECTURE.md) 和 [故障排查](docs/TROUBLESHOOTING.md)。
+更多信息见 [环境准备](docs/ENVIRONMENT.md)、[开发与测试](docs/DEVELOPMENT.md)、[架构](docs/ARCHITECTURE.md)、[迭代说明](docs/ITERATION_NOTES.md) 和 [故障排查](docs/TROUBLESHOOTING.md)。
 
 ## 许可证
 

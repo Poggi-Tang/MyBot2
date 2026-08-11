@@ -210,7 +210,7 @@ namespace WeChatAuto.Components
             foreach (var item in items)
             {
                 var message = item.ClassName == "mmui::ChatVoiceItemView"
-                    ? _Client.MessageMonitor.TranscribeVisibleVoiceCore(item)
+                    ? _Client.MessageMonitor.ReadVisibleVoiceContent(item)
                     : item.Name.Trim();
                 result.Add(new ChatSimpleMessage
                 {
