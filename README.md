@@ -21,7 +21,7 @@ MyBot2 是面向 Windows 微信 4.x 的桌面自动聊天与自动化测试工�
 
 普通用户可从 GitHub Releases 下载 `MyBot2-Setup-x.y.z-x64.exe`。安装向导可选择安装目录、内置 Python、SDK/快捷能力和可选 Codex CLI，也可当场填写主模型 API 或进入 MyBot 后再配置。默认不安装 Codex CLI；以后可在“系统配置 → 模型配置 → Codex CLI 扩展”中从 OpenAI 官方下载安装。
 
-MyBot 启动后每 10 分钟检查一次 GitHub Release。发现新版本时，界面会显示“可更新”，下载按钮会同时获取安装包及 `.sha256` 文件，校验通过后退出当前版本、覆盖安装并重新启动。升级安装会保留安装目录中的 `config.json` 和 `data/`。
+MyBot 启动后每 10 分钟检查一次 GitHub Release。发现新版本时，界面会显示“可更新”，下载按钮会同时获取安装包及 `.sha256` 文件，校验通过后退出当前版本、覆盖安装并重新启动。手动运行安装包覆盖安装时也会先关闭正在运行的 MyBot。升级安装会保留安装目录中的 `config.json` 和 `data/`。
 
 ### 1. 准备环境
 
@@ -69,7 +69,7 @@ cd MyBot2
 维护者可用以下命令构建与 GitHub Release 同名的 Windows 安装包：
 
 ```powershell
-.\scripts\build-installer.ps1 -Version 2.3.0 -IncludeCodex
+.\scripts\build-installer.ps1 -Version 2.3.1 -IncludeCodex
 ```
 
 产物位于 `dist/`，包括安装程序和对应的 SHA256 文件。GitHub Actions 也会在推送 `v*` 标签后运行同一构建流程并上传这两个 Release Asset。

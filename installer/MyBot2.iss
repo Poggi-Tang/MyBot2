@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "2.3.0"
+  #define MyAppVersion "2.3.1"
 #endif
 #ifndef SourceRoot
   #define SourceRoot ".."
@@ -45,7 +45,7 @@ Name: "custom"; Description: "自定义安装"; Flags: iscustom
 
 [Components]
 Name: "core"; Description: "MyBot 核心程序与自包含微信 Server"; Types: recommended full custom; Flags: fixed
-Name: "python"; Description: "内置 Python 3.13 运行环境"; Types: recommended full
+Name: "python"; Description: "内置 Python 3.13 运行环境"; Types: full
 Name: "sdkcatalog"; Description: "功能列表与 SDK 开发/完整测试资源"; Types: recommended full
 Name: "abilities"; Description: "快捷能力与配音 Skill"; Types: recommended full
 Name: "codex"; Description: "Codex CLI 扩展（约 370 MB，之后也可在软件内安装）"; Types: full
@@ -59,6 +59,7 @@ Name: "{app}\data"
 Name: "{app}\logs"
 
 [Files]
+Source: "{#SourceRoot}\scripts\stop-mybot.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\main.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\run.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\run.ps1"; DestDir: "{app}"; Flags: ignoreversion
@@ -181,16 +182,24 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
-  Pid, Script, ServerPath: String;
+  Pid, Script, ScriptPath, ScriptParams, ServerPath: String;
   ResultCode: Integer;
 begin
   Result := '';
   Pid := ExpandConstant('{param:MYPID|0}');
+  ExtractTemporaryFile('stop-mybot.ps1');
+  ScriptPath := ExpandConstant('{tmp}\stop-mybot.ps1');
+  ScriptParams := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' +
+    AddQuotes(ScriptPath) + ' -InstallRoot ' + AddQuotes(ExpandConstant('{app}'));
   if Pid <> '0' then
+    ScriptParams := ScriptParams + ' -MyBotProcessId ' + Pid;
+  if not Exec(
+    'powershell.exe', ScriptParams, '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode
+  ) or (ResultCode <> 0) then
   begin
-    Script := '-NoProfile -NonInteractive -WindowStyle Hidden -Command "Wait-Process -Id ' + Pid + ' -ErrorAction SilentlyContinue"';
-    if not Exec('powershell.exe', Script, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-      Result := '无法等待旧版 MyBot 退出。';
+    Result := '无法停止正在运行的 MyBot。请手动退出后重试。';
+    exit;
   end;
   ServerPath := ExpandConstant('{app}\runtime\server\Server.exe');
   Script := '-NoProfile -NonInteractive -WindowStyle Hidden -Command "$p=''' + ServerPath + '''; Get-CimInstance Win32_Process -Filter ''Name=''''Server.exe'''''' | Where-Object {$_.ExecutablePath -eq $p} | ForEach-Object {Stop-Process -Id $_.ProcessId -Force}"';

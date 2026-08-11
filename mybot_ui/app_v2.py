@@ -2449,7 +2449,7 @@ class MainWindow(QMainWindow):
             server_environment = os.environ.copy()
             server_environment["ASPNETCORE_URLS"] = f"http://{host}:{port}"
             process = subprocess.Popen(
-                [str(executable)],
+                [str(executable), "--urls", f"http://{host}:{port}"],
                 cwd=str(executable.parent),
                 env=server_environment,
                 stdin=subprocess.DEVNULL,

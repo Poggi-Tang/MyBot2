@@ -1,11 +1,36 @@
 param(
     [switch]$SkipServer,
-    [switch]$NoEnvironmentCheck
+    [switch]$NoEnvironmentCheck,
+    [switch]$PrepareOnly
 )
 
 $ErrorActionPreference = "Stop"
 $appRoot = $PSScriptRoot
 $configPath = Join-Path $appRoot "config.json"
+$installOptionsPath = Join-Path $appRoot "install-options.ini"
+
+function Resolve-MyBotPython {
+    $candidates = @(
+        (Join-Path $appRoot "runtime\python\python.exe"),
+        (Join-Path $appRoot ".venv\Scripts\python.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+    $systemPython = Get-Command python -ErrorAction SilentlyContinue
+    if ($systemPython) { return $systemPython.Source }
+    throw "Python is not available. Install the bundled runtime or a compatible system Python."
+}
+
+$python = Resolve-MyBotPython
+if (Test-Path -LiteralPath $installOptionsPath) {
+    & $python -c `
+        "import sys; sys.path.insert(0, sys.argv[1]); from mybot_ui.install_options import apply_pending_install_options; print(apply_pending_install_options(sys.argv[1]))" `
+        $appRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to apply installer options."
+    }
+}
 
 function Test-WebSocketEndpoint {
     param(
@@ -88,6 +113,10 @@ function Assert-PortAvailableForServer {
 if (-not (Test-Path -LiteralPath $configPath)) {
     throw "Missing config.json. Start from config.example.json and add local credentials."
 }
+if ($PrepareOnly) {
+    Write-Host "MyBot launch configuration is ready."
+    return
+}
 
 $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
 $uri = [Uri]$config.wechat.websocket_url
@@ -128,6 +157,7 @@ if (-not $webSocketReady) {
         $env:ASPNETCORE_URLS = "http://$($uri.Host):$($uri.Port)"
         $serverProcess = Start-Process `
             -FilePath $serverExe `
+            -ArgumentList @("--urls", "http://$($uri.Host):$($uri.Port)") `
             -WorkingDirectory (Split-Path -Parent $serverExe) `
             -WindowStyle Hidden `
             -PassThru
@@ -142,9 +172,6 @@ if (-not $webSocketReady) {
     }
 }
 
-$python = Join-Path $appRoot "runtime\python\python.exe"
-if (-not (Test-Path -LiteralPath $python)) { $python = Join-Path $appRoot ".venv\Scripts\python.exe" }
-if (-not (Test-Path -LiteralPath $python)) { $python = (Get-Command python).Source }
 Push-Location $appRoot
 try {
     & $python main.py

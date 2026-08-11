@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.3.1 - 2026-08-12
+
+### Fixed
+
+- Manual overwrite installs now detect and stop the running MyBot frontend before replacing application files.
+- Installer process shutdown is bounded by a grace period and fails clearly instead of waiting indefinitely.
+- First launch now applies pending installer choices before the launcher requires `config.json`.
+- Deferred API setup no longer blocks the first application launch.
+- Environment checks now accept the configured local WebSocket port instead of requiring port 5177.
+
 ## 2.3.0 - 2026-08-12
 
 ### Added

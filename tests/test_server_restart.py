@@ -42,6 +42,10 @@ class ServerRestartTests(unittest.TestCase):
             check=False,
         )
         popen.assert_called_once()
+        self.assertEqual(
+            [r"F:\server\Server.exe", "--urls", "http://127.0.0.1:5177"],
+            popen.call_args.args[0],
+        )
         self.assertEqual("http://127.0.0.1:5177", popen.call_args.kwargs["env"]["ASPNETCORE_URLS"])
         create_connection.assert_called_once_with(("127.0.0.1", 5177), timeout=0.4)
 

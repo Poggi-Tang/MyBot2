@@ -41,7 +41,7 @@ Write-Check "Application config" (Test-Path -LiteralPath $configPath) $configPat
 if (Test-Path -LiteralPath $configPath) {
     $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
     $uri = [Uri]$config.wechat.websocket_url
-    Write-Check "WebSocket contract" ($uri.Host -eq "127.0.0.1" -and $uri.Port -eq 5177 -and $uri.AbsolutePath -eq "/ws") $uri.AbsoluteUri
+    Write-Check "WebSocket contract" ($uri.Host -in @("127.0.0.1", "localhost") -and $uri.AbsolutePath -eq "/ws") $uri.AbsoluteUri
     $serverExecutable = [string]$config.server.exe_path
     if ([string]::IsNullOrWhiteSpace($serverExecutable)) {
         $serverExecutable = $packagedServer
@@ -56,7 +56,7 @@ if (Test-Path -LiteralPath $configPath) {
     $optionalReady = @($config.backup.api_key, $config.image.api_key) | Where-Object {
         -not [string]::IsNullOrWhiteSpace($_) -and $_ -ne "replace-me"
     }
-    Write-Check "Primary model credential" $primaryReady "value not displayed"
+    Write-Check "Primary model credential" $primaryReady "value not displayed" $false
     Write-Check "Optional model credentials" ($optionalReady.Count -eq 2) ("{0}/2 configured; values not displayed" -f $optionalReady.Count) $false
 
     $serverListening = $null -ne (Get-NetTCPConnection -State Listen -LocalPort $uri.Port -ErrorAction SilentlyContinue)
