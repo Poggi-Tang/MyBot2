@@ -15,13 +15,27 @@ function Write-Check([string]$Name, [bool]$Ok, [string]$Detail, [bool]$Required 
     if (-not $Ok -and $Required) { $script:failures++ }
 }
 
+$embeddedPython = Join-Path $appRoot "runtime\python\python.exe"
 $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-Write-Check "Python" ($null -ne $pythonCommand) $(if ($pythonCommand) { (python --version 2>&1) } else { "not found" })
+$pythonReady = (Test-Path -LiteralPath $embeddedPython) -or ($null -ne $pythonCommand)
+$pythonDetail = if (Test-Path -LiteralPath $embeddedPython) {
+    (& $embeddedPython --version 2>&1)
+} elseif ($pythonCommand) {
+    (python --version 2>&1)
+} else {
+    "not found"
+}
+Write-Check "Python" $pythonReady $pythonDetail
 
+$packagedServer = Join-Path $appRoot "runtime\server\Server.exe"
 $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
 $dotnetVersion = if ($dotnetCommand) { dotnet --version } else { "not found" }
-Write-Check ".NET SDK" ($dotnetVersion -like "10.*") $dotnetVersion
-Write-Check "SDK source" (Test-Path -LiteralPath $sdkRoot) $sdkRoot
+Write-Check ".NET runtime" ((Test-Path -LiteralPath $packagedServer) -or ($dotnetVersion -like "10.*")) $(
+    if (Test-Path -LiteralPath $packagedServer) { "self-contained Server" } else { $dotnetVersion }
+)
+Write-Check "SDK source" ((Test-Path -LiteralPath $sdkRoot) -or (Test-Path -LiteralPath $packagedServer)) $(
+    if (Test-Path -LiteralPath $sdkRoot) { $sdkRoot } else { "packaged runtime" }
+)
 Write-Check "Application config" (Test-Path -LiteralPath $configPath) $configPath
 
 if (Test-Path -LiteralPath $configPath) {
@@ -29,7 +43,12 @@ if (Test-Path -LiteralPath $configPath) {
     $uri = [Uri]$config.wechat.websocket_url
     Write-Check "WebSocket contract" ($uri.Host -eq "127.0.0.1" -and $uri.Port -eq 5177 -and $uri.AbsolutePath -eq "/ws") $uri.AbsoluteUri
     $serverExecutable = [string]$config.server.exe_path
-    if (-not [IO.Path]::IsPathRooted($serverExecutable)) {
+    if ([string]::IsNullOrWhiteSpace($serverExecutable)) {
+        $serverExecutable = $packagedServer
+        if (-not (Test-Path -LiteralPath $serverExecutable)) {
+            $serverExecutable = Join-Path $appRoot "sdk\WeChatAuto4_X\WebSocketServer\Server\bin\Debug\net10.0-windows\Server.exe"
+        }
+    } elseif (-not [IO.Path]::IsPathRooted($serverExecutable)) {
         $serverExecutable = Join-Path $appRoot $serverExecutable
     }
     Write-Check "Server executable" (Test-Path -LiteralPath $serverExecutable) $serverExecutable

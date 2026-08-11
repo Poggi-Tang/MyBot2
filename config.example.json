@@ -4,7 +4,7 @@
     "max_message_mb": 64
   },
   "server": {
-    "exe_path": "sdk\\WeChatAuto4_X\\WebSocketServer\\Server\\bin\\Debug\\net10.0-windows\\Server.exe"
+    "exe_path": ""
   },
   "primary": {
     "provider": "openai",
@@ -60,8 +60,10 @@
   },
   "codex": {
     "enabled": false,
-    "executable": "tools\\codex\\codex-x86_64-pc-windows-msvc.exe",
-    "proxy_executable": "tools\\codex\\codex-responses-api-proxy-x86_64-pc-windows-msvc.exe",
+    "api_base_url": "https://api.openai.com/v1",
+    "model": "gpt-5.6-sol",
+    "api_key": "",
+    "model_reasoning_effort": "low",
     "timeout_seconds": 900,
     "yolo_mode": false
   }

@@ -32,6 +32,7 @@ class CodexRuntimeConfig:
     base_url: str
     api_key: str
     model: str
+    codex_home: Path | None = None
     timeout_seconds: int = 900
     mcp_tool_timeout_seconds: int = 5
     thread_max_tasks: int = 2
@@ -185,6 +186,21 @@ class CodexCliRunner:
         lock = self._conversation_lock(conversation)
         with lock:
             return self._run_locked(conversation, message, conversation_context, task_id, attachments)
+
+    def probe(self) -> str:
+        self._validate_runtime()
+        completed, text, _thread_id = self._execute(
+            "只回复 MYBOT_CODEX_OK",
+            workspace=self.config.project_root,
+            previous_thread="",
+            ephemeral=True,
+            task_context=None,
+        )
+        if completed.returncode:
+            raise CodexCliError("Codex CLI 连接测试失败：" + self._last_error(completed))
+        if "MYBOT_CODEX_OK" not in text:
+            raise CodexCliError("Codex CLI 已启动，但模型没有返回预期测试结果。")
+        return text
 
     def _run_locked(
         self,
@@ -550,6 +566,7 @@ class CodexCliRunner:
                 raise CodexCliError(f"{name}不存在：{path}")
         if not self.config.api_key or not self.config.base_url or not self.config.model:
             raise CodexCliError("Codex 接口地址、模型或密钥未配置。")
+        self._codex_home().mkdir(parents=True, exist_ok=True)
 
     def _initial_prompt(self, request: str, context: str, abilities: str, attachments: str = "") -> str:
         return "\n\n".join((
@@ -729,6 +746,7 @@ class CodexCliRunner:
         environment = os.environ.copy()
         environment.pop("OPENAI_API_KEY", None)
         environment.pop("OPENAI_BASE_URL", None)
+        environment["CODEX_HOME"] = str(self._codex_home())
         existing_pythonpath = environment.get("PYTHONPATH", "")
         environment["PYTHONPATH"] = str(self.config.project_root) + (
             os.pathsep + existing_pythonpath if existing_pythonpath else ""
@@ -739,3 +757,10 @@ class CodexCliRunner:
             environment["MYBOT_TASK_CONTEXT"] = str(context_path)
             environment["MYBOT_TASK_TOKEN"] = task_token
         return environment
+
+    def _codex_home(self) -> Path:
+        return (
+            self.config.codex_home
+            if self.config.codex_home is not None
+            else self.config.project_root / "data" / "codex" / "home"
+        ).resolve()

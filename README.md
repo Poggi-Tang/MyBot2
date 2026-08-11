@@ -17,6 +17,12 @@ MyBot2 是面向 Windows 微信 4.x 的桌面自动聊天与自动化测试工�
 
 ## 快速部署
 
+### Windows 安装包
+
+普通用户可从 GitHub Releases 下载 `MyBot2-Setup-x.y.z-x64.exe`。安装向导可选择安装目录、内置 Python、SDK/快捷能力和可选 Codex CLI，也可当场填写主模型 API 或进入 MyBot 后再配置。默认不安装 Codex CLI；以后可在“系统配置 → 模型配置 → Codex CLI 扩展”中从 OpenAI 官方下载安装。
+
+MyBot 启动后每 10 分钟检查一次 GitHub Release。发现新版本时，界面会显示“可更新”，下载按钮会同时获取安装包及 `.sha256` 文件，校验通过后退出当前版本、覆盖安装并重新启动。升级安装会保留安装目录中的 `config.json` 和 `data/`。
+
 ### 1. 准备环境
 
 - Windows 10/11 x64
@@ -60,9 +66,19 @@ cd MyBot2
 
 界面中的完整测试会产生真实消息、文件或朋友圈操作，只应对测试账号和明确允许的会话逐项执行。
 
+维护者可用以下命令构建与 GitHub Release 同名的 Windows 安装包：
+
+```powershell
+.\scripts\build-installer.ps1 -Version 2.3.0 -IncludeCodex
+```
+
+产物位于 `dist/`，包括安装程序和对应的 SHA256 文件。GitHub Actions 也会在推送 `v*` 标签后运行同一构建流程并上传这两个 Release Asset。
+
 ## 可选 Codex CLI
 
-仓库不附带 Codex CLI 可执行文件。相关二进制体积大，并且应由使用者从官方渠道安装。需要该功能时，把 Codex CLI 与 Responses API 代理放入 `tools/codex`，或在 `config.json` 的 `codex.executable`、`codex.proxy_executable` 中填写绝对路径，然后设置 `codex.enabled` 为 `true`。
+仓库不附带 Codex CLI 可执行文件。需要该功能时，进入“系统配置 → 模型配置 → Codex CLI 扩展”，点击“安装 CLI”。MyBot 会从 OpenAI 官方 Release 下载经过 SHA256 校验的 Windows 完整包，并安装到项目的 `data/codex/runtime`。
+
+安装完成后，在同一页面填写 CLI 专用 API 地址、模型和密钥，测试通过后再启用任务调度。CLI 运行文件、`CODEX_HOME`、会话和配置都保留在当前项目内，不读取用户全局 Codex 配置。
 
 ## 目录
 

@@ -15,6 +15,7 @@ from mybot_ui.app_v2 import MainWindow
 from mybot_ui.attachments import ConversationAttachmentStore, IncomingAttachment
 from mybot_ui.auto_chat import ListenerMessageCursor, ReplyAction, ReplyKind
 from mybot_ui.chat_engine import ConversationMemory, IncomingMessage, ModelConfig
+from mybot_ui.codex_install import CodexRuntimeManager
 from mybot_ui.codex_runner import CodexResult, CodexRuntimeConfig
 from mybot_ui.security_policy import SecurityPolicy
 
@@ -1131,6 +1132,39 @@ class SecurityManagementTests(unittest.TestCase):
         self.assertFalse(admin_runner.config.restricted_workspace)
         self.assertFalse(user_runner.config.yolo_mode)
         self.assertTrue(user_runner.config.restricted_workspace)
+
+    def test_codex_runtime_uses_project_install_and_independent_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = CodexRuntimeManager(root)
+            window = SimpleNamespace(
+                settings={"codex": {
+                    "mcp_tool_timeout_seconds": 7,
+                    "thread_max_tasks": 3,
+                }},
+                config_path=root / "config.json",
+                codex_runtime_manager=manager,
+                codex_api_url=SimpleNamespace(text=lambda: "https://cli.example/v1"),
+                codex_api_key=SimpleNamespace(text=lambda: "cli-secret"),
+                codex_model_name=SimpleNamespace(text=lambda: "cli-model"),
+                codex_timeout=SimpleNamespace(value=lambda: 420),
+                codex_reasoning_effort=SimpleNamespace(currentData=lambda: "high"),
+                codex_yolo_mode=SimpleNamespace(isChecked=lambda: True),
+            )
+
+            runtime = MainWindow._codex_runtime_config(window)
+
+            self.assertEqual(manager.executable.resolve(), runtime.executable)
+            self.assertEqual(manager.proxy_executable.resolve(), runtime.proxy_executable)
+            self.assertEqual(manager.codex_home.resolve(), runtime.codex_home)
+            self.assertEqual("https://cli.example/v1", runtime.base_url)
+            self.assertEqual("cli-secret", runtime.api_key)
+            self.assertEqual("cli-model", runtime.model)
+            self.assertEqual(420, runtime.timeout_seconds)
+            self.assertEqual(7, runtime.mcp_tool_timeout_seconds)
+            self.assertEqual(3, runtime.thread_max_tasks)
+            self.assertEqual("high", runtime.model_reasoning_effort)
+            self.assertTrue(runtime.yolo_mode)
 
     def test_non_admin_text_output_is_redacted_before_sending(self):
         sent = []

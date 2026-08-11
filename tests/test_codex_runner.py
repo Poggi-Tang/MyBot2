@@ -89,6 +89,10 @@ class CodexRunnerTests(unittest.TestCase):
             self.assertIn(str(root), environment["PYTHONPATH"])
             self.assertEqual("1", environment["PYTHONUTF8"])
             self.assertEqual("utf-8", environment["PYTHONIOENCODING"])
+            self.assertEqual(
+                str((root / "data" / "codex" / "home").resolve()),
+                environment["CODEX_HOME"],
+            )
             self.assertTrue(any("register_output_file" in value for value in initial))
             self.assertIn("mcp_servers.mybot.tool_timeout_sec=5", initial)
             self.assertIn('model_reasoning_effort="low"', initial)
@@ -96,6 +100,30 @@ class CodexRunnerTests(unittest.TestCase):
             self.assertNotIn("get_task_context", enabled_tools)
             self.assertNotIn("get_capabilities", enabled_tools)
             self.assertTrue(any("PYTHONUTF8" in value for value in initial))
+
+    def test_probe_uses_ephemeral_project_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exe = root / "codex.exe"
+            proxy = root / "proxy.exe"
+            exe.touch()
+            proxy.touch()
+            runner = CodexCliRunner(
+                CodexRuntimeConfig(exe, proxy, root, "https://example.com", "key", "model"),
+                ExtensionAbilityStore(root / "extensions"),
+                CodexThreadStore(root / "threads.json"),
+            )
+            completed = subprocess.CompletedProcess(["codex"], 0, "", "")
+            with patch.object(
+                runner,
+                "_execute",
+                return_value=(completed, "MYBOT_CODEX_OK", ""),
+            ) as execute:
+                self.assertEqual("MYBOT_CODEX_OK", runner.probe())
+
+            self.assertEqual(root, execute.call_args.kwargs["workspace"])
+            self.assertTrue(execute.call_args.kwargs["ephemeral"])
+            self.assertIsNone(execute.call_args.kwargs["task_context"])
 
     def test_yolo_mode_bypasses_approvals_and_workspace_permissions(self):
         with tempfile.TemporaryDirectory() as directory:

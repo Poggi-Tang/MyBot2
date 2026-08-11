@@ -1,0 +1,110 @@
+param(
+    [string]$Version = "",
+    [switch]$IncludeCodex,
+    [switch]$SkipPythonRuntime,
+    [switch]$SkipServerPublish
+)
+
+$ErrorActionPreference = "Stop"
+$appRoot = Split-Path -Parent $PSScriptRoot
+$buildRoot = Join-Path $appRoot "build\runtime"
+$pythonRoot = Join-Path $buildRoot "python"
+$serverRoot = Join-Path $buildRoot "server"
+$codexRoot = Join-Path $buildRoot "codex"
+$distRoot = Join-Path $appRoot "dist"
+
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $Version = & python -c "from mybot_ui import __version__; print(__version__)"
+}
+if ($Version -notmatch '^2\.\d+\.\d+$') {
+    throw "Installer version must use 2.x.x: $Version"
+}
+
+New-Item -ItemType Directory -Force -Path $buildRoot, $distRoot | Out-Null
+
+if (-not $SkipServerPublish) {
+    if (Test-Path -LiteralPath $serverRoot) { Remove-Item -LiteralPath $serverRoot -Recurse -Force }
+    dotnet publish `
+        (Join-Path $appRoot "sdk\WeChatAuto4_X\WebSocketServer\Server\Server.csproj") `
+        -c Release -r win-x64 --self-contained true `
+        -p:PublishSingleFile=true -p:DebugType=None -p:DebugSymbols=false `
+        -o $serverRoot
+    if ($LASTEXITCODE -ne 0) { throw "Server publish failed." }
+}
+
+if (-not $SkipPythonRuntime) {
+    $pythonVersion = "3.13.14"
+    $pythonArchive = Join-Path $env:TEMP "python-$pythonVersion-embed-amd64.zip"
+    if (-not (Test-Path -LiteralPath $pythonArchive)) {
+        Invoke-WebRequest `
+            -Uri "https://www.python.org/ftp/python/$pythonVersion/python-$pythonVersion-embed-amd64.zip" `
+            -OutFile $pythonArchive
+    }
+    if (Test-Path -LiteralPath $pythonRoot) { Remove-Item -LiteralPath $pythonRoot -Recurse -Force }
+    Expand-Archive -LiteralPath $pythonArchive -DestinationPath $pythonRoot
+    New-Item -ItemType Directory -Force -Path (Join-Path $pythonRoot "Lib\site-packages") | Out-Null
+    python -m pip install `
+        --disable-pip-version-check `
+        --no-compile `
+        --target (Join-Path $pythonRoot "Lib\site-packages") `
+        -r (Join-Path $appRoot "requirements-runtime.txt")
+    if ($LASTEXITCODE -ne 0) { throw "Embedded Python dependencies failed." }
+    Remove-Item -LiteralPath (Join-Path $pythonRoot "Lib\site-packages\bin") -Recurse -Force -ErrorAction SilentlyContinue
+    $pysideRoot = Join-Path $pythonRoot "Lib\site-packages\PySide6"
+    @("doc", "glue", "include", "lib", "qml", "scripts", "support", "typesystems") | ForEach-Object {
+        Remove-Item -LiteralPath (Join-Path $pysideRoot $_) -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    @(
+        "python313.zip"
+        "."
+        "Lib\site-packages"
+        "..\.."
+        "import site"
+    ) | Set-Content -LiteralPath (Join-Path $pythonRoot "python313._pth") -Encoding ASCII
+    & (Join-Path $pythonRoot "python.exe") -c "import PySide6, websockets, PIL; print('embedded runtime ok')"
+    if ($LASTEXITCODE -ne 0) { throw "Embedded Python validation failed." }
+}
+
+if ($IncludeCodex) {
+    $codexTag = "rust-v0.147.0"
+    $packageName = "codex-package-x86_64-pc-windows-msvc.tar.gz"
+    $packagePath = Join-Path $env:TEMP $packageName
+    $checksumPath = Join-Path $env:TEMP "codex-package_SHA256SUMS"
+    $baseUrl = "https://github.com/openai/codex/releases/download/$codexTag"
+    Invoke-WebRequest -Uri "$baseUrl/codex-package_SHA256SUMS" -OutFile $checksumPath
+    if (-not (Test-Path -LiteralPath $packagePath)) {
+        Invoke-WebRequest -Uri "$baseUrl/$packageName" -OutFile $packagePath
+    }
+    $expected = (Get-Content -LiteralPath $checksumPath | Where-Object { $_ -match [regex]::Escape($packageName) } | Select-Object -First 1).Split()[0]
+    $actual = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected.ToLowerInvariant()) { throw "Codex package SHA256 mismatch." }
+    $extractRoot = Join-Path $env:TEMP ("mybot-codex-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $extractRoot | Out-Null
+    try {
+        tar.exe -xzf $packagePath -C $extractRoot
+        if (Test-Path -LiteralPath $codexRoot) { Remove-Item -LiteralPath $codexRoot -Recurse -Force }
+        New-Item -ItemType Directory -Path $codexRoot | Out-Null
+        Get-ChildItem -LiteralPath $extractRoot -Recurse -File | Where-Object {
+            $_.Extension -in @(".exe", ".json") -or $_.Name -like "*SHA256SUMS*"
+        } | Copy-Item -Destination $codexRoot
+    } finally {
+        Remove-Item -LiteralPath $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$isccCandidates = @(
+    (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
+    (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
+    (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe")
+)
+$iscc = $isccCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $iscc) { throw "Inno Setup 6 is not installed." }
+
+& $iscc "/DMyAppVersion=$Version" "/DSourceRoot=$appRoot" (Join-Path $appRoot "installer\MyBot2.iss")
+if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed." }
+
+$installer = Join-Path $distRoot "MyBot2-Setup-$Version-x64.exe"
+if (-not (Test-Path -LiteralPath $installer)) { throw "Installer output not found: $installer" }
+$hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+"$hash  $([IO.Path]::GetFileName($installer))" | Set-Content -LiteralPath "$installer.sha256" -Encoding ASCII
+Write-Host "Installer ready: $installer"

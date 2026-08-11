@@ -51,6 +51,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import __version__
+
 from .api import Gateway, GatewayResult
 from .attachments import (
     ConversationAttachmentStore,
@@ -89,8 +91,10 @@ from .chat_engine import (
 )
 from .operation_log import operations
 from .image_understanding import ImageUnderstandingCache, extract_image_understanding
+from .install_options import apply_pending_install_options
 from .codex_router import CodexTaskRouter, ReusableTaskReviewer
 from .codex_runner import CodexCliRunner, CodexResult, CodexRuntimeConfig, CodexThreadStore
+from .codex_install import CodexInstallResult, CodexRuntimeManager, CodexRuntimeStatus
 from .extension_abilities import ExtensionAbilityStore
 from .fast_file_tasks import FastTextTaskExecutor
 from .episodic_memory import EpisodicMemoryStore
@@ -100,6 +104,7 @@ from .reply_policy import ReplyPolicy, ReplyProfile
 from .realtime_tools import RealtimeToolExecutor, detect_realtime_request
 from .security_policy import SecurityPolicy
 from .task_status import ACTIVE_TASK_STATES, TaskStatusPool
+from .update_manager import UpdateInfo, UpdateManager
 from .voice_actor import (
     HiggsVoiceActor,
     VoicePerformancePlan,
@@ -165,6 +170,14 @@ def normalize_window_layout(settings: dict[str, Any]) -> dict[str, int]:
 
 class GatewayEventBridge(QObject):
     received = Signal(object)
+
+
+class CodexInstallEventBridge(QObject):
+    progress = Signal(int, str)
+
+
+class UpdateEventBridge(QObject):
+    progress = Signal(int, str)
 
 
 def button(text: str, slot: Callable, primary: bool = False) -> QPushButton:
@@ -360,6 +373,16 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config_path = Path(__file__).resolve().parent.parent / "config.json"
         self.runtime_log_path = Path(__file__).resolve().parent.parent / "runtime.log"
+        try:
+            self._install_options_message = apply_pending_install_options(self.config_path.parent)
+        except Exception as exc:
+            self._install_options_message = f"安装选项应用失败：{exc}"
+        self.update_manager = UpdateManager(self.config_path.parent, __version__)
+        self._latest_update: UpdateInfo | None = None
+        self._update_check_in_progress = False
+        self._update_download_in_progress = False
+        self.update_events = UpdateEventBridge(self)
+        self.update_events.progress.connect(self._update_download_progress)
         self.settings, self._config_load_error = self._load_settings()
         self._reply_policy = ReplyPolicy.from_mapping(self.settings.get("chat", {}))
         security_settings = self.settings.get("security", {})
@@ -395,7 +418,7 @@ class MainWindow(QMainWindow):
         self._auto_selection_restored = False
         self._group_metadata_refresh_in_progress = False
         self._group_metadata_refresh_pending = False
-        self.setWindowTitle("MyBot 2.0 · AI WeChat Operator")
+        self.setWindowTitle(f"MyBot {__version__} · AI WeChat Operator")
         self.resize(1360, 860)
         self.setMinimumSize(1050, 680)
         wechat_settings = self.settings.get("wechat", {})
@@ -481,6 +504,9 @@ class MainWindow(QMainWindow):
         )
         self.learning_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mybot-memory")
         self.ability_store = ExtensionAbilityStore(self.config_path.parent / "extensions")
+        self.codex_runtime_manager = CodexRuntimeManager(self.config_path.parent)
+        self.codex_install_events = CodexInstallEventBridge(self)
+        self.codex_install_events.progress.connect(self._codex_install_progress)
         self.codex_thread_store = CodexThreadStore(self.config_path.parent / "data" / "codex" / "threads.json")
         attachment_settings = self.settings.get("attachments", {})
         if not isinstance(attachment_settings, dict):
@@ -572,6 +598,10 @@ class MainWindow(QMainWindow):
         self._task_status_timer.setInterval(500)
         self._task_status_timer.timeout.connect(self._refresh_task_status_view)
         self._task_status_timer.start()
+        self._update_timer = QTimer(self)
+        self._update_timer.setInterval(10 * 60 * 1000)
+        self._update_timer.timeout.connect(self._check_for_updates)
+        self._update_timer.start()
         self._install_stop_shortcut()
         self._select_page(0)
         self._append_chat("系统", "已加载自动聊天、功能目录和快速测试模块。")
@@ -579,9 +609,12 @@ class MainWindow(QMainWindow):
             self._append_chat("配置", f"读取配置失败，已使用默认值：{self._config_load_error}")
         else:
             self._append_chat("配置", f"已读取明文配置：{self.config_path}")
+        if self._install_options_message:
+            self._append_chat("安装", self._install_options_message)
         self._window_layout_ready = True
         QTimer.singleShot(0, self._restore_window_layout)
         QTimer.singleShot(350, self._connect)
+        QTimer.singleShot(5000, self._check_for_updates)
 
     def _load_settings(self) -> tuple[dict[str, Any], str]:
         if not self.config_path.exists():
@@ -737,7 +770,7 @@ class MainWindow(QMainWindow):
         sidebar.setFixedWidth(225)
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(18, 22, 18, 18)
-        side.addWidget(label("MyBot2.0", "brand"))
+        side.addWidget(label(f"MyBot {__version__}", "brand"))
         side.addWidget(label("AI WECHAT OPERATOR", "muted"))
         side.addSpacing(18)
         for index, title in enumerate(NAVIGATION_TITLES):
@@ -777,6 +810,9 @@ class MainWindow(QMainWindow):
         self.restart_app_button = button("重启软件", self._restart_application)
         self.restart_app_button.setToolTip("保存当前状态，关闭并重新启动 MyBot 2.0；Server 保持运行")
         top.addWidget(self.restart_app_button)
+        self.update_button = button("", self._start_application_update, True)
+        self.update_button.setVisible(False)
+        top.addWidget(self.update_button)
         content_layout.addWidget(topbar)
         content_layout.addWidget(self._pages, 1)
         root_layout.addWidget(content, 1)
@@ -983,19 +1019,6 @@ class MainWindow(QMainWindow):
         memory_row.addStretch()
         reply_box.addLayout(memory_row)
 
-        codex_row = QHBoxLayout()
-        self.codex_enabled = QCheckBox("复杂任务交给 Codex CLI")
-        codex_settings = self.settings.get("codex", {})
-        codex_enabled = isinstance(codex_settings, dict) and bool(codex_settings.get("enabled", True))
-        self.codex_enabled.setChecked(codex_enabled)
-        self.codex_enabled.setToolTip("代码、文件、调试和研究任务会先确认，再由 Codex CLI 异步完成")
-        self.codex_status = label("", "muted")
-        self._update_codex_status()
-        codex_row.addWidget(self.codex_enabled)
-        codex_row.addWidget(self.codex_status)
-        codex_row.addStretch()
-        reply_box.addLayout(codex_row)
-
         reply_actions = QHBoxLayout()
         reply_actions.addWidget(button("编辑回复策略", self._edit_reply_policy))
         self.reply_policy_summary = label("", "muted")
@@ -1070,6 +1093,66 @@ class MainWindow(QMainWindow):
         secondary_actions.addStretch()
         secondary_box.addLayout(secondary_actions)
         model_layout.addWidget(secondary_card)
+
+        codex_settings = self.settings.get("codex", {})
+        if not isinstance(codex_settings, dict):
+            codex_settings = {}
+        codex_card, codex_box = card("Codex CLI 扩展")
+        codex_header = QHBoxLayout()
+        self.codex_enabled = QCheckBox("启用 CLI 任务调度")
+        self.codex_enabled.setToolTip("代码、文件、调试和研究任务可交给项目内 Codex CLI 异步完成")
+        self.codex_status = label("", "muted")
+        self.codex_install_button = button("安装 CLI", self._install_codex_cli, True)
+        self.codex_test_button = button("测试 CLI", self._test_codex_cli)
+        codex_header.addWidget(self.codex_enabled)
+        codex_header.addWidget(self.codex_status)
+        codex_header.addStretch()
+        codex_header.addWidget(self.codex_test_button)
+        codex_header.addWidget(self.codex_install_button)
+        codex_box.addLayout(codex_header)
+
+        codex_grid = QGridLayout()
+        self.codex_api_url = QLineEdit(str(codex_settings.get("api_base_url", "https://api.openai.com/v1")))
+        self.codex_model_name = QLineEdit(str(codex_settings.get("model", "gpt-5.6-sol")))
+        self.codex_api_key = QLineEdit(str(codex_settings.get("api_key", "")))
+        self.codex_api_key.setPlaceholderText("仅保存在本项目 config.json")
+        self.codex_reasoning_effort = QComboBox()
+        for text, value in (("最低", "minimal"), ("低", "low"), ("中", "medium"), ("高", "high")):
+            self.codex_reasoning_effort.addItem(text, value)
+        reasoning = str(codex_settings.get("model_reasoning_effort", "low"))
+        reasoning_index = self.codex_reasoning_effort.findData(reasoning)
+        self.codex_reasoning_effort.setCurrentIndex(reasoning_index if reasoning_index >= 0 else 1)
+        self.codex_timeout = QSpinBox()
+        self.codex_timeout.setRange(30, 3600)
+        try:
+            codex_timeout = int(codex_settings.get("timeout_seconds", 900))
+        except (TypeError, ValueError):
+            codex_timeout = 900
+        self.codex_timeout.setValue(min(3600, max(30, codex_timeout)))
+        self.codex_yolo_mode = QCheckBox("管理员使用 YOLO 模式")
+        self.codex_yolo_mode.setChecked(bool(codex_settings.get("yolo_mode", False)))
+        self.codex_yolo_mode.setToolTip("仅管理员任务跳过 Codex 审批与沙箱；普通联系人仍限制在单个任务目录")
+        codex_grid.addWidget(label("API 地址", "muted"), 0, 0)
+        codex_grid.addWidget(self.codex_api_url, 0, 1)
+        codex_grid.addWidget(label("模型", "muted"), 0, 2)
+        codex_grid.addWidget(self.codex_model_name, 0, 3)
+        codex_grid.addWidget(label("API 密钥", "muted"), 1, 0)
+        codex_grid.addWidget(self.codex_api_key, 1, 1, 1, 3)
+        codex_grid.addWidget(label("推理强度", "muted"), 2, 0)
+        codex_grid.addWidget(self.codex_reasoning_effort, 2, 1)
+        codex_grid.addWidget(label("任务超时", "muted"), 2, 2)
+        codex_grid.addWidget(self.codex_timeout, 2, 3)
+        codex_box.addLayout(codex_grid)
+        codex_box.addWidget(self.codex_yolo_mode)
+        self.codex_install_progress = QProgressBar()
+        self.codex_install_progress.setRange(0, 100)
+        self.codex_install_progress.setValue(0)
+        self.codex_install_progress.setVisible(False)
+        codex_box.addWidget(self.codex_install_progress)
+        model_layout.addWidget(codex_card)
+        runtime_status = self.codex_runtime_manager.status()
+        self.codex_enabled.setChecked(bool(codex_settings.get("enabled", False)) and runtime_status.installed)
+        self._update_codex_runtime_controls(runtime_status)
 
         voice_settings = self.settings.get("voice", {})
         if not isinstance(voice_settings, dict):
@@ -1216,6 +1299,27 @@ class MainWindow(QMainWindow):
         self.security_admins.setPlaceholderText("每行一个联系人名称")
         security_box.addWidget(self.security_admins)
         security_layout.addWidget(security_card)
+
+        update_card, update_box = card("软件更新")
+        update_header = QHBoxLayout()
+        self.update_status = label(f"当前版本 {__version__}", "muted")
+        self.check_update_button = button(
+            "检查更新",
+            lambda: self._check_for_updates(manual=True),
+        )
+        self.install_update_button = button("下载并更新", self._start_application_update, True)
+        self.install_update_button.setVisible(False)
+        update_header.addWidget(self.update_status)
+        update_header.addStretch()
+        update_header.addWidget(self.check_update_button)
+        update_header.addWidget(self.install_update_button)
+        update_box.addLayout(update_header)
+        self.update_progress = QProgressBar()
+        self.update_progress.setRange(0, 100)
+        self.update_progress.setValue(0)
+        self.update_progress.setVisible(False)
+        update_box.addWidget(self.update_progress)
+        security_layout.addWidget(update_card)
         security_layout.addStretch()
         tabs.addTab(security_scroll, "安全管理")
 
@@ -1266,6 +1370,94 @@ class MainWindow(QMainWindow):
         self.voice_api_voice.blockSignals(False)
         if is_boson and not self._boson_voices_loaded and not self._boson_voices_loading:
             QTimer.singleShot(0, self._refresh_boson_voices)
+
+    def _update_codex_runtime_controls(
+        self,
+        status: CodexRuntimeStatus | None = None,
+    ) -> None:
+        status = status or self.codex_runtime_manager.status()
+        self.codex_enabled.setEnabled(status.installed)
+        self.codex_test_button.setEnabled(status.installed)
+        self.codex_install_button.setText("重新安装" if status.installed else "安装 CLI")
+        if not status.installed:
+            self.codex_enabled.setChecked(False)
+        self._update_codex_status(status=status)
+
+    def _codex_install_progress(self, percent: int, message: str) -> None:
+        self.codex_install_progress.setValue(min(100, max(0, int(percent))))
+        self.codex_install_progress.setFormat(message + "  %p%")
+
+    def _install_codex_cli(self) -> None:
+        if getattr(self, "_codex_installing", False):
+            return
+        self._codex_installing = True
+        self.codex_install_button.setEnabled(False)
+        self.codex_test_button.setEnabled(False)
+        self.codex_enabled.setEnabled(False)
+        self.codex_install_progress.setVisible(True)
+        self.codex_install_progress.setValue(0)
+        self.codex_install_progress.setFormat("准备安装  %p%")
+        span = operations.start("codex", "codex_cli_install", details={
+            "source": "openai_official_release",
+        })
+
+        def install() -> tuple[CodexInstallResult | None, str]:
+            try:
+                result = self.codex_runtime_manager.install(
+                    self.codex_install_events.progress.emit
+                )
+                return result, ""
+            except Exception as exc:
+                return None, str(exc)
+
+        def installed(outcome: tuple[CodexInstallResult | None, str]) -> None:
+            result, error = outcome
+            self._codex_installing = False
+            self.codex_install_button.setEnabled(True)
+            self.codex_install_progress.setVisible(False)
+            status = self.codex_runtime_manager.status()
+            self._update_codex_runtime_controls(status)
+            if result is None:
+                operations.finish(span, success=False, error=error)
+                QMessageBox.critical(self, "Codex CLI 安装失败", error)
+                return
+            operations.finish(span, success=True, result={"version": result.version})
+            self.statusBar().showMessage(f"Codex CLI {result.version} 已安装到项目目录", 8000)
+
+        self._run_future(self.codex_executor.submit(install), installed)
+
+    def _test_codex_cli(self) -> None:
+        status = self.codex_runtime_manager.status()
+        if not status.installed:
+            QMessageBox.warning(self, "CLI 未安装", "请先安装 Codex CLI。")
+            return
+        if not all((
+            self.codex_api_url.text().strip(),
+            self.codex_model_name.text().strip(),
+            self.codex_api_key.text().strip(),
+        )):
+            QMessageBox.warning(self, "CLI 配置不完整", "请填写 API 地址、模型和密钥。")
+            return
+        self.codex_test_button.setEnabled(False)
+        self.codex_test_button.setText("测试中…")
+
+        def test() -> tuple[bool, str]:
+            try:
+                self._codex_runner(privileged=True).probe()
+                return True, ""
+            except Exception as exc:
+                return False, str(exc)
+
+        def tested(result: tuple[bool, str]) -> None:
+            ok, error = result
+            self.codex_test_button.setEnabled(True)
+            self.codex_test_button.setText("测试 CLI")
+            if ok:
+                self.statusBar().showMessage("Codex CLI 与模型接口连接正常", 6000)
+            else:
+                QMessageBox.critical(self, "Codex CLI 测试失败", error)
+
+        self._run_future(self.codex_executor.submit(test), tested)
 
     def _refresh_boson_voices(self) -> None:
         if self.voice_api_provider.currentData() != "boson" or self._boson_voices_loading:
@@ -1916,18 +2108,19 @@ class MainWindow(QMainWindow):
     def _server_executable(self) -> Path:
         configured = self._config_value("server", "exe_path", "MYBOT_SERVER_EXE", "")
         if configured:
-            return Path(str(configured)).expanduser().resolve()
-        return (
-            Path(__file__).resolve().parents[2]
-            / "wechatautosdk"
-            / "WeChatAuto4_X"
-            / "WebSocketServer"
-            / "Server"
-            / "bin"
-            / "Debug"
-            / "net10.0-windows"
-            / "Server.exe"
+            path = Path(str(configured)).expanduser()
+            if not path.is_absolute():
+                path = self.config_path.parent / path
+            return path.resolve()
+        root = self.config_path.parent
+        candidates = (
+            root / "runtime" / "server" / "Server.exe",
+            root / "sdk" / "WeChatAuto4_X" / "WebSocketServer" / "Server"
+            / "bin" / "Debug" / "net10.0-windows" / "Server.exe",
+            root.parent / "wechatautosdk" / "WeChatAuto4_X" / "WebSocketServer"
+            / "Server" / "bin" / "Debug" / "net10.0-windows" / "Server.exe",
         )
+        return next((path.resolve() for path in candidates if path.is_file()), candidates[0].resolve())
 
     def _restart_server(self) -> None:
         if not self.restart_server_button.isEnabled():
@@ -2005,6 +2198,145 @@ class MainWindow(QMainWindow):
         })
         self._append_chat("自动聊天", "连续读取会话超时，正在自动重启 Server 并恢复接管")
         QTimer.singleShot(0, self._restart_server)
+
+    def _check_for_updates(self, manual: bool = False) -> None:
+        if self._update_check_in_progress or self._update_download_in_progress:
+            return
+        self._update_check_in_progress = True
+        if manual:
+            self.check_update_button.setEnabled(False)
+            self.update_status.setText("正在检查 GitHub Release…")
+
+        def check() -> tuple[UpdateInfo | None, str]:
+            try:
+                return self.update_manager.check(), ""
+            except Exception as exc:
+                return None, str(exc)
+
+        def checked(result: tuple[UpdateInfo | None, str]) -> None:
+            info, error = result
+            self._update_check_in_progress = False
+            self.check_update_button.setEnabled(True)
+            if info is None:
+                self.update_status.setText(f"当前版本 {__version__} · 检查失败")
+                if manual:
+                    QMessageBox.warning(self, "检查更新失败", error)
+                return
+            self._latest_update = info
+            if not info.update_available:
+                self.update_status.setText(f"当前版本 {__version__} · 已是最新版本")
+                self.update_button.setVisible(False)
+                self.install_update_button.setVisible(False)
+                return
+            suffix = "可下载安装" if info.installable else "Release 暂无安装包"
+            self.update_status.setText(f"发现 {info.latest_version} · {suffix}")
+            self.update_button.setText(f"可更新 v{info.latest_version}")
+            self.update_button.setEnabled(info.installable)
+            self.update_button.setVisible(True)
+            self.install_update_button.setEnabled(info.installable)
+            self.install_update_button.setVisible(True)
+
+        self._run_future(self.model_executor.submit(check), checked)
+
+    def _start_application_update(self) -> None:
+        info = self._latest_update
+        if info is None or not info.installable:
+            self._check_for_updates(manual=True)
+            return
+        if self._update_download_in_progress:
+            return
+        message = (
+            f"将下载并安装 MyBot {info.latest_version}。\n\n"
+            "安装前会停止当前 MyBot 和本项目 Server，完成后自动启动新版本。"
+        )
+        if QMessageBox.question(self, "更新 MyBot", message) != QMessageBox.Yes:
+            return
+        self._update_download_in_progress = True
+        self.update_button.setEnabled(False)
+        self.install_update_button.setEnabled(False)
+        self.check_update_button.setEnabled(False)
+        self.update_progress.setVisible(True)
+        self.update_progress.setValue(0)
+        self.update_progress.setFormat("准备下载  %p%")
+        span = operations.start("update", "installer_download", details={
+            "current_version": __version__,
+            "target_version": info.latest_version,
+        })
+
+        def download() -> tuple[Path | None, str]:
+            try:
+                return self.update_manager.download(info, self.update_events.progress.emit), ""
+            except Exception as exc:
+                return None, str(exc)
+
+        def downloaded(result: tuple[Path | None, str]) -> None:
+            installer, error = result
+            if installer is None:
+                self._update_download_in_progress = False
+                self.update_button.setEnabled(True)
+                self.install_update_button.setEnabled(True)
+                self.check_update_button.setEnabled(True)
+                self.update_progress.setVisible(False)
+                operations.finish(span, success=False, error=error)
+                QMessageBox.critical(self, "更新下载失败", error)
+                return
+            operations.finish(span, success=True, result={"installer": installer.name})
+            try:
+                self._launch_verified_installer(installer)
+            except Exception as exc:
+                self._update_download_in_progress = False
+                self.update_button.setEnabled(True)
+                self.install_update_button.setEnabled(True)
+                self.check_update_button.setEnabled(True)
+                self.update_progress.setVisible(False)
+                QMessageBox.critical(self, "无法启动更新", str(exc))
+
+        self._run_future(self.model_executor.submit(download), downloaded)
+
+    def _update_download_progress(self, percent: int, message: str) -> None:
+        value = min(100, max(0, int(percent)))
+        self.update_progress.setValue(value)
+        self.update_progress.setFormat(message + "  %p%")
+        self.update_button.setText(f"更新下载 {value}%")
+
+    def _launch_verified_installer(self, installer: Path) -> None:
+        if not installer.is_file():
+            raise FileNotFoundError(installer)
+        server = self._server_executable()
+        for pid in self._server_pids(server):
+            stopped = subprocess.run(
+                ["taskkill.exe", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            if stopped.returncode:
+                detail = (stopped.stderr or stopped.stdout).strip()
+                raise RuntimeError(f"无法停止旧 Server (PID {pid})：{detail or '权限不足'}")
+        self._auto_selection_save_timer.stop()
+        self._persist_auto_chat_selection()
+        self._save_window_layout()
+        command = [
+            str(installer),
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/CLOSEAPPLICATIONS",
+            "/RESTARTAPPLICATIONS",
+            f"/DIR={self.config_path.parent.resolve()}",
+            f"/MYPID={os.getpid()}",
+            "/UPDATE=1",
+        ]
+        subprocess.Popen(
+            command,
+            cwd=str(installer.parent),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+        self.statusBar().showMessage("正在退出并安装新版本…")
+        QTimer.singleShot(250, self.close)
 
     @staticmethod
     def _restart_application_helper(process_id: int, app_root: Path) -> list[str]:
@@ -2765,6 +3097,19 @@ class MainWindow(QMainWindow):
             for line in self.security_admins.toPlainText().splitlines()
             if line.strip()
         })
+        existing_codex = self.settings.get("codex", {})
+        codex_settings = dict(existing_codex) if isinstance(existing_codex, dict) else {}
+        codex_settings.pop("executable", None)
+        codex_settings.pop("proxy_executable", None)
+        codex_settings.update({
+            "enabled": self.codex_enabled.isChecked() and self.codex_runtime_manager.status().installed,
+            "api_base_url": self.codex_api_url.text().strip(),
+            "model": self.codex_model_name.text().strip(),
+            "api_key": self.codex_api_key.text().strip(),
+            "model_reasoning_effort": str(self.codex_reasoning_effort.currentData()),
+            "timeout_seconds": self.codex_timeout.value(),
+            "yolo_mode": self.codex_yolo_mode.isChecked(),
+        })
         data = dict(self.settings)
         data.update({
             "wechat": {
@@ -2803,10 +3148,7 @@ class MainWindow(QMainWindow):
                 "enabled": self.security_enabled.isChecked(),
                 "administrators": security_administrators,
             },
-            "codex": {
-                **(self.settings.get("codex", {}) if isinstance(self.settings.get("codex", {}), dict) else {}),
-                "enabled": self.codex_enabled.isChecked(),
-            },
+            "codex": codex_settings,
             "voice": {
                 "enabled": self.voice_enabled.isChecked(),
                 "source": str(self.voice_source.currentData()),
@@ -2860,8 +3202,18 @@ class MainWindow(QMainWindow):
             )
             self.memory_page_status.setText(f"{page_text} · {suffix}" if suffix else page_text)
 
-    def _update_codex_status(self, suffix: str = "") -> None:
-        text = f"快捷能力 {self.ability_store.count()} 个"
+    def _update_codex_status(
+        self,
+        suffix: str = "",
+        *,
+        status: CodexRuntimeStatus | None = None,
+    ) -> None:
+        manager = getattr(self, "codex_runtime_manager", None)
+        status = status or (manager.status() if manager is not None else CodexRuntimeStatus(False))
+        if status.installed:
+            text = f"已安装 {status.version} · 快捷能力 {self.ability_store.count()} 个"
+        else:
+            text = status.error or "未安装"
         self.codex_status.setText(f"{text} · {suffix}" if suffix else text)
 
     def _codex_runtime_config(self) -> CodexRuntimeConfig:
@@ -2869,14 +3221,9 @@ class MainWindow(QMainWindow):
         if not isinstance(settings, dict):
             settings = {}
         root = self.config_path.parent
-        executable = Path(str(settings.get("executable", "tools/codex/codex-x86_64-pc-windows-msvc.exe")))
-        proxy = Path(str(settings.get("proxy_executable", "tools/codex/codex-responses-api-proxy-x86_64-pc-windows-msvc.exe")))
-        if not executable.is_absolute():
-            executable = root / executable
-        if not proxy.is_absolute():
-            proxy = root / proxy
+        manager = getattr(self, "codex_runtime_manager", None) or CodexRuntimeManager(root)
         try:
-            timeout = max(30, int(settings.get("timeout_seconds", 900)))
+            timeout = max(30, int(self.codex_timeout.value()))
         except (TypeError, ValueError):
             timeout = 900
         def bounded_integer(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -2884,23 +3231,24 @@ class MainWindow(QMainWindow):
                 return min(maximum, max(minimum, int(settings.get(name, default))))
             except (TypeError, ValueError):
                 return default
-        reasoning_effort = str(settings.get("model_reasoning_effort", "low")).strip().lower()
+        reasoning_effort = str(self.codex_reasoning_effort.currentData()).strip().lower()
         if reasoning_effort not in {"minimal", "low", "medium", "high"}:
             reasoning_effort = "low"
         return CodexRuntimeConfig(
-            executable=executable.resolve(),
-            proxy_executable=proxy.resolve(),
+            executable=manager.executable.resolve(),
+            proxy_executable=manager.proxy_executable.resolve(),
             project_root=root.resolve(),
-            base_url=self.model_base_url.text().strip(),
-            api_key=self.model_api_key.text().strip(),
-            model=self.model_name.currentText().strip(),
+            base_url=self.codex_api_url.text().strip(),
+            api_key=self.codex_api_key.text().strip(),
+            model=self.codex_model_name.text().strip(),
+            codex_home=manager.codex_home.resolve(),
             timeout_seconds=timeout,
             mcp_tool_timeout_seconds=bounded_integer("mcp_tool_timeout_seconds", 5, 2, 30),
             thread_max_tasks=bounded_integer("thread_max_tasks", 2, 1, 10),
             thread_max_context_chars=bounded_integer("thread_max_context_chars", 12_000, 2_000, 100_000),
             thread_max_age_seconds=bounded_integer("thread_max_age_seconds", 1_800, 60, 86_400),
             model_reasoning_effort=reasoning_effort,
-            yolo_mode=bool(settings.get("yolo_mode", False)),
+            yolo_mode=self.codex_yolo_mode.isChecked(),
         )
 
     def _codex_runner(self, *, privileged: bool = False) -> CodexCliRunner:

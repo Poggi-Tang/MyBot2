@@ -96,7 +96,14 @@ if (-not $NoEnvironmentCheck) {
 }
 
 $serverExe = [string]$config.server.exe_path
-if (-not [IO.Path]::IsPathRooted($serverExe)) {
+if ([string]::IsNullOrWhiteSpace($serverExe)) {
+    $serverCandidates = @(
+        (Join-Path $appRoot "runtime\server\Server.exe"),
+        (Join-Path $appRoot "sdk\WeChatAuto4_X\WebSocketServer\Server\bin\Debug\net10.0-windows\Server.exe")
+    )
+    $serverExe = $serverCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($serverExe)) { $serverExe = $serverCandidates[0] }
+} elseif (-not [IO.Path]::IsPathRooted($serverExe)) {
     $serverExe = [IO.Path]::GetFullPath((Join-Path $appRoot $serverExe))
 }
 if (-not (Test-Path -LiteralPath $serverExe)) {
@@ -135,7 +142,8 @@ if (-not $webSocketReady) {
     }
 }
 
-$python = Join-Path $appRoot ".venv\Scripts\python.exe"
+$python = Join-Path $appRoot "runtime\python\python.exe"
+if (-not (Test-Path -LiteralPath $python)) { $python = Join-Path $appRoot ".venv\Scripts\python.exe" }
 if (-not (Test-Path -LiteralPath $python)) { $python = (Get-Command python).Source }
 Push-Location $appRoot
 try {
