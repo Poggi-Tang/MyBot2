@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.4.0 - 2026-08-12
+
+### Changed
+
+- Codex CLI is now an application-managed extension under System Configuration > Model Configuration and is never bundled in the Windows installer.
+- The in-app installer downloads the current Windows x64 package, checksum and Responses proxy from OpenAI's latest official Codex Release.
+- CLI API and runtime controls stay disabled until installation completes; all runtime, home, task, session and API state remains project-local.
+- Release packages are smaller and no longer require a separate build-time Codex download.
+
+### Fixed
+
+- First-launch installer option application no longer prints localized text through the Windows console code page, preventing startup and CI failures on English Windows hosts.
+
 ## 2.3.1 - 2026-08-12
 
 ### Fixed

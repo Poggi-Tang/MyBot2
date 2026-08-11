@@ -25,7 +25,7 @@ function Resolve-MyBotPython {
 $python = Resolve-MyBotPython
 if (Test-Path -LiteralPath $installOptionsPath) {
     & $python -c `
-        "import sys; sys.path.insert(0, sys.argv[1]); from mybot_ui.install_options import apply_pending_install_options; print(apply_pending_install_options(sys.argv[1]))" `
+        "import sys; sys.path.insert(0, sys.argv[1]); from mybot_ui.install_options import apply_pending_install_options; apply_pending_install_options(sys.argv[1])" `
         $appRoot
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to apply installer options."

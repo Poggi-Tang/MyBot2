@@ -1103,6 +1103,9 @@ class MainWindow(QMainWindow):
         self.codex_enabled.setToolTip("代码、文件、调试和研究任务可交给项目内 Codex CLI 异步完成")
         self.codex_status = label("", "muted")
         self.codex_install_button = button("安装 CLI", self._install_codex_cli, True)
+        self.codex_install_button.setToolTip(
+            "从 OpenAI 官方最新 Release 下载并安装到当前 MyBot 项目"
+        )
         self.codex_test_button = button("测试 CLI", self._test_codex_cli)
         codex_header.addWidget(self.codex_enabled)
         codex_header.addWidget(self.codex_status)
@@ -1132,6 +1135,14 @@ class MainWindow(QMainWindow):
         self.codex_yolo_mode = QCheckBox("管理员使用 YOLO 模式")
         self.codex_yolo_mode.setChecked(bool(codex_settings.get("yolo_mode", False)))
         self.codex_yolo_mode.setToolTip("仅管理员任务跳过 Codex 审批与沙箱；普通联系人仍限制在单个任务目录")
+        self.codex_config_controls = (
+            self.codex_api_url,
+            self.codex_model_name,
+            self.codex_api_key,
+            self.codex_reasoning_effort,
+            self.codex_timeout,
+            self.codex_yolo_mode,
+        )
         codex_grid.addWidget(label("API 地址", "muted"), 0, 0)
         codex_grid.addWidget(self.codex_api_url, 0, 1)
         codex_grid.addWidget(label("模型", "muted"), 0, 2)
@@ -1378,6 +1389,8 @@ class MainWindow(QMainWindow):
         status = status or self.codex_runtime_manager.status()
         self.codex_enabled.setEnabled(status.installed)
         self.codex_test_button.setEnabled(status.installed)
+        for control in self.codex_config_controls:
+            control.setEnabled(status.installed)
         self.codex_install_button.setText("重新安装" if status.installed else "安装 CLI")
         if not status.installed:
             self.codex_enabled.setChecked(False)

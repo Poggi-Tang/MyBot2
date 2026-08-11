@@ -44,7 +44,7 @@ jobs:
 
       - name: Build installer
         shell: pwsh
-        run: .\scripts\build-installer.ps1 -Version $env:MYBOT_VERSION -IncludeCodex
+        run: .\scripts\build-installer.ps1 -Version $env:MYBOT_VERSION
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4

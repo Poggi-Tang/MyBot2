@@ -15,7 +15,7 @@ from mybot_ui.app_v2 import MainWindow
 from mybot_ui.attachments import ConversationAttachmentStore, IncomingAttachment
 from mybot_ui.auto_chat import ListenerMessageCursor, ReplyAction, ReplyKind
 from mybot_ui.chat_engine import ConversationMemory, IncomingMessage, ModelConfig
-from mybot_ui.codex_install import CodexRuntimeManager
+from mybot_ui.codex_install import CodexRuntimeManager, CodexRuntimeStatus
 from mybot_ui.codex_runner import CodexResult, CodexRuntimeConfig
 from mybot_ui.security_policy import SecurityPolicy
 
@@ -1165,6 +1165,46 @@ class SecurityManagementTests(unittest.TestCase):
             self.assertEqual(3, runtime.thread_max_tasks)
             self.assertEqual("high", runtime.model_reasoning_effort)
             self.assertTrue(runtime.yolo_mode)
+
+    def test_codex_api_controls_unlock_only_after_installation(self):
+        states = {}
+
+        def control(name):
+            return SimpleNamespace(setEnabled=lambda value: states.__setitem__(name, value))
+
+        enabled = control("enabled")
+        enabled.setChecked = lambda value: states.__setitem__("checked", value)
+        install_button = SimpleNamespace(
+            setText=lambda value: states.__setitem__("button_text", value)
+        )
+        window = SimpleNamespace(
+            codex_runtime_manager=object(),
+            codex_enabled=enabled,
+            codex_test_button=control("test"),
+            codex_config_controls=(control("api"), control("model"), control("key")),
+            codex_install_button=install_button,
+            _update_codex_status=lambda **_kwargs: None,
+        )
+
+        MainWindow._update_codex_runtime_controls(window, CodexRuntimeStatus(False))
+        self.assertFalse(states["enabled"])
+        self.assertFalse(states["test"])
+        self.assertFalse(states["api"])
+        self.assertFalse(states["model"])
+        self.assertFalse(states["key"])
+        self.assertFalse(states["checked"])
+        self.assertEqual("安装 CLI", states["button_text"])
+
+        MainWindow._update_codex_runtime_controls(
+            window,
+            CodexRuntimeStatus(True, version="0.147.0"),
+        )
+        self.assertTrue(states["enabled"])
+        self.assertTrue(states["test"])
+        self.assertTrue(states["api"])
+        self.assertTrue(states["model"])
+        self.assertTrue(states["key"])
+        self.assertEqual("重新安装", states["button_text"])
 
     def test_non_admin_text_output_is_redacted_before_sending(self):
         sent = []

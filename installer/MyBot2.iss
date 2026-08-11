@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "2.3.1"
+  #define MyAppVersion "2.4.0"
 #endif
 #ifndef SourceRoot
   #define SourceRoot ".."
@@ -48,7 +48,6 @@ Name: "core"; Description: "MyBot 核心程序与自包含微信 Server"; Types:
 Name: "python"; Description: "内置 Python 3.13 运行环境"; Types: full
 Name: "sdkcatalog"; Description: "功能列表与 SDK 开发/完整测试资源"; Types: recommended full
 Name: "abilities"; Description: "快捷能力与配音 Skill"; Types: recommended full
-Name: "codex"; Description: "Codex CLI 扩展（约 370 MB，之后也可在软件内安装）"; Types: full
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: unchecked
@@ -81,7 +80,6 @@ Source: "{#SourceRoot}\build\runtime\python\*"; DestDir: "{app}\runtime\python";
 Source: "{#SourceRoot}\sdk\*"; DestDir: "{app}\sdk"; Components: sdkcatalog; Excludes: "**\bin\*,**\obj\*,**\logs\*,**\artifacts\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\extensions\*"; DestDir: "{app}\extensions"; Components: abilities; Excludes: ".candidates\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\codex\skills\*"; DestDir: "{app}\codex\skills"; Components: abilities; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SourceRoot}\build\runtime\codex\*"; DestDir: "{app}\data\codex\runtime"; Components: codex; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 [Icons]
 Name: "{autodesktop}\MyBot2"; Filename: "{cmd}"; Parameters: "/d /c ""{app}\run.cmd"""; WorkingDir: "{app}"; Tasks: desktopicon
@@ -217,7 +215,6 @@ begin
     SetIniString('install', 'packaged_server', '1', OptionsPath);
     SetIniString('install', 'sdk_catalog', IntToStr(Ord(WizardIsComponentSelected('sdkcatalog'))), OptionsPath);
     SetIniString('install', 'abilities', IntToStr(Ord(WizardIsComponentSelected('abilities'))), OptionsPath);
-    SetIniString('install', 'codex_extension', IntToStr(Ord(WizardIsComponentSelected('codex'))), OptionsPath);
     if ApiChoicePage.SelectedValueIndex = 1 then
     begin
       SetIniString('primary', 'base_url', ApiPage.Values[0], OptionsPath);

@@ -13,7 +13,7 @@ class InstallOptionsTests(unittest.TestCase):
                 {
                     "primary": {"provider": "old", "api_key": "existing"},
                     "server": {"exe_path": "old-server.exe"},
-                    "features": {"existing": True},
+                    "features": {"existing": True, "codex_extension": True},
                 }
             ),
             encoding="utf-8",
@@ -35,7 +35,6 @@ defer_api=0
 packaged_server=1
 sdk_catalog=0
 abilities=1
-codex_extension=1
 
 [primary]
 base_url=https://example.test/v1
@@ -66,7 +65,6 @@ api_key=test-key
                     "existing": True,
                     "sdk_catalog": False,
                     "abilities": True,
-                    "codex_extension": True,
                 },
             )
 
@@ -85,7 +83,6 @@ defer_api=1
 packaged_server=1
 sdk_catalog=1
 abilities=0
-codex_extension=0
 """,
                 encoding="utf-8",
             )
@@ -98,7 +95,7 @@ codex_extension=0
             self.assertEqual(data["server"]["exe_path"], "runtime/server/Server.exe")
             self.assertEqual(
                 data["features"],
-                {"sdk_catalog": True, "abilities": False, "codex_extension": False},
+                {"sdk_catalog": True, "abilities": False},
             )
 
 

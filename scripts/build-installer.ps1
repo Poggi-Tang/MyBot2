@@ -1,6 +1,5 @@
 param(
     [string]$Version = "",
-    [switch]$IncludeCodex,
     [switch]$SkipPythonRuntime,
     [switch]$SkipServerPublish
 )
@@ -10,7 +9,6 @@ $appRoot = Split-Path -Parent $PSScriptRoot
 $buildRoot = Join-Path $appRoot "build\runtime"
 $pythonRoot = Join-Path $buildRoot "python"
 $serverRoot = Join-Path $buildRoot "server"
-$codexRoot = Join-Path $buildRoot "codex"
 $distRoot = Join-Path $appRoot "dist"
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
@@ -63,33 +61,6 @@ if (-not $SkipPythonRuntime) {
     ) | Set-Content -LiteralPath (Join-Path $pythonRoot "python313._pth") -Encoding ASCII
     & (Join-Path $pythonRoot "python.exe") -c "import PySide6, websockets, PIL; print('embedded runtime ok')"
     if ($LASTEXITCODE -ne 0) { throw "Embedded Python validation failed." }
-}
-
-if ($IncludeCodex) {
-    $codexTag = "rust-v0.147.0"
-    $packageName = "codex-package-x86_64-pc-windows-msvc.tar.gz"
-    $packagePath = Join-Path $env:TEMP $packageName
-    $checksumPath = Join-Path $env:TEMP "codex-package_SHA256SUMS"
-    $baseUrl = "https://github.com/openai/codex/releases/download/$codexTag"
-    Invoke-WebRequest -Uri "$baseUrl/codex-package_SHA256SUMS" -OutFile $checksumPath
-    if (-not (Test-Path -LiteralPath $packagePath)) {
-        Invoke-WebRequest -Uri "$baseUrl/$packageName" -OutFile $packagePath
-    }
-    $expected = (Get-Content -LiteralPath $checksumPath | Where-Object { $_ -match [regex]::Escape($packageName) } | Select-Object -First 1).Split()[0]
-    $actual = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actual -ne $expected.ToLowerInvariant()) { throw "Codex package SHA256 mismatch." }
-    $extractRoot = Join-Path $env:TEMP ("mybot-codex-" + [guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Path $extractRoot | Out-Null
-    try {
-        tar.exe -xzf $packagePath -C $extractRoot
-        if (Test-Path -LiteralPath $codexRoot) { Remove-Item -LiteralPath $codexRoot -Recurse -Force }
-        New-Item -ItemType Directory -Path $codexRoot | Out-Null
-        Get-ChildItem -LiteralPath $extractRoot -Recurse -File | Where-Object {
-            $_.Extension -in @(".exe", ".json") -or $_.Name -like "*SHA256SUMS*"
-        } | Copy-Item -Destination $codexRoot
-    } finally {
-        Remove-Item -LiteralPath $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
-    }
 }
 
 $isccCandidates = @(

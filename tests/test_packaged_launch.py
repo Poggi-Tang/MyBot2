@@ -29,7 +29,6 @@ defer_api=1
 packaged_server=1
 sdk_catalog=1
 abilities=1
-codex_extension=0
 """,
                 encoding="utf-8",
             )
@@ -57,7 +56,7 @@ codex_extension=0
             config = json.loads((root / "config.json").read_text(encoding="utf-8"))
             self.assertEqual("runtime/server/Server.exe", config["server"]["exe_path"])
             self.assertEqual(
-                {"sdk_catalog": True, "abilities": True, "codex_extension": False},
+                {"sdk_catalog": True, "abilities": True},
                 config["features"],
             )
 

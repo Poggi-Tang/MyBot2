@@ -34,10 +34,10 @@ def apply_pending_install_options(project_root: str | Path) -> str:
 
         features = data.get("features", {})
         features = dict(features) if isinstance(features, dict) else {}
+        features.pop("codex_extension", None)
         features.update({
             "sdk_catalog": _option_bool(install, "sdk_catalog", True),
             "abilities": _option_bool(install, "abilities", True),
-            "codex_extension": _option_bool(install, "codex_extension", False),
         })
         data["features"] = features
 
