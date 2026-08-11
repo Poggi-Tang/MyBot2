@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 from unittest.mock import patch
 
 from mybot_ui.auto_chat import (
@@ -199,7 +199,7 @@ class ReplyPlanningTests(unittest.TestCase):
     def test_reply_output_removes_trailing_model_trace_artifact(self):
         self.assertEqual(
             "你说得对，我刚才称呼弄混了，抱歉",
-            sanitize_auto_reply_text("你说得对，我刚才称呼弄混了，抱歉 ab12cd34"),
+            sanitize_auto_reply_text("你说得对，我刚才称呼弄混了，抱歉 bd6923"),
         )
         self.assertEqual("验证码是 123456", sanitize_auto_reply_text("验证码是 123456"))
 
@@ -226,7 +226,7 @@ class ReplyPlanningTests(unittest.TestCase):
     def test_unspecified_sticker_uses_recent_conversation_semantics(self):
         self.assertEqual(
             "舔狗",
-            infer_sticker_query("", "测试联系人甲: 这次来个舔狗风格的"),
+            infer_sticker_query("", "芝士圆子: 这次来个舔狗风格的"),
         )
         self.assertEqual(
             "可爱联盟",

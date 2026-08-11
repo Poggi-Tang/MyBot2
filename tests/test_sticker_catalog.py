@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 from unittest.mock import MagicMock
 
 from mybot_ui.api import command_timeout
@@ -14,9 +14,9 @@ class StickerCatalogToolTests(unittest.TestCase):
     def test_send_sticker_payload_preserves_category_and_identifier(self):
         payload = build_options(
             "SendSticker",
-            {"who": "测试联系人甲", "category": "自定义表情", "sticker": "A1B2C3"},
+            {"who": "芝士圆子", "category": "自定义表情", "sticker": "A1B2C3"},
         )
-        self.assertEqual("测试联系人甲", payload["who"])
+        self.assertEqual("芝士圆子", payload["who"])
         self.assertEqual("自定义表情", payload["category"])
         self.assertEqual("A1B2C3", payload["sticker"])
 

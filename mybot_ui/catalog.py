@@ -31,6 +31,7 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec("SearchFriend", "定位联系人或群", "会话", "搜索并打开指定好友或群聊", "可逆", ("who",), "configured"),
     ToolSpec("GetTitle", "读取当前会话信息", "会话", "读取当前聊天标题、类型和群人数"),
     ToolSpec("GetChatHistory_Who", "读取聊天记录", "消息", "读取指定对象从某日开始的聊天记录", required=("who", "fetch_date"), test_kind="configured"),
+    ToolSpec("GetVisibleChatMessages", "读取可见消息", "消息", "读取指定会话当前屏幕内的消息气泡", required=("who",), test_kind="configured"),
     ToolSpec("SendMessage", "发送文本消息", "消息", "向好友或群聊发送文本", "写入", ("who", "message"), "configured"),
     ToolSpec("SendEmoji", "发送表情", "消息", "向好友或群聊发送微信表情", "写入", ("who", "emoji"), "configured"),
     ToolSpec("ScanAllStickers", "扫描表情包", "消息", "扫描所有表情分类；普通表情按控件名称建目录，自定义表情按视觉哈希建目录"),

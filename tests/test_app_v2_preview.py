@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 from collections import deque
 from concurrent.futures import Future
 from datetime import datetime
@@ -17,6 +17,136 @@ from mybot_ui.codex_runner import CodexResult
 
 
 class AutoChatPreviewPollingTests(unittest.TestCase):
+    def test_late_preview_echo_is_processed_instead_of_logged_and_lost(self):
+        accepted = []
+        logs = []
+        payload = json.dumps([{
+            "conversation_title": "芝士圆子",
+            "conversation_content": "你喜欢吃什么",
+            "time": "18:20",
+        }], ensure_ascii=False)
+        window = SimpleNamespace(
+            auto_chat_running=True,
+            account="圆子",
+            _preview_snapshots={"芝士圆子": "上一条回复|18:19"},
+            _auto_chat_sent_contents={},
+            _auto_chat_groups=set(),
+            _message_cursor=ListenerMessageCursor(),
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
+            _accept_auto_message=accepted.append,
+            _fetch_preview_image=lambda *_args: None,
+            _handle_auto_chat_event=lambda _event: None,
+            _append_chat=lambda *args: logs.append(args),
+            _process_late_visible_conversations=lambda data: MainWindow._process_late_visible_conversations(
+                window, data
+            ),
+        )
+
+        with patch("mybot_ui.app_v2.operations.event") as event:
+            MainWindow._gateway_event(window, {"type": "echo", "data": payload})
+
+        self.assertEqual(1, len(accepted))
+        self.assertEqual("你喜欢吃什么", accepted[0].content)
+        self.assertEqual([], logs)
+        event.assert_called_once_with(
+            "workflow", "late_preview_processed", {"conversation_count": 1, "accepted": 1}
+        )
+
+    def test_visible_message_recovery_queues_every_question_after_previous_preview(self):
+        accepted = []
+        calls = []
+        visible = [
+            {"who": "对方", "message": "喜欢吃香蕉吗", "unique_string": "old-1"},
+            {"who": "对方", "message": "不需要，刚刚反应慢了，下次秒回主人", "unique_string": "anchor"},
+            {"who": "对方", "message": "你在干嘛", "unique_string": "new-1"},
+            {"who": "对方", "message": "你喜欢爸爸还是妈妈", "unique_string": "new-2"},
+            {"who": "对方", "message": "你喜欢甜豆腐脑还是咸豆腐脑", "unique_string": "new-3"},
+            {"who": "对方", "message": "喜欢西瓜还是香蕉", "unique_string": "new-4"},
+            {"who": "对方", "message": "稍后出现的消息不应提前处理", "unique_string": "later"},
+        ]
+        window = SimpleNamespace(
+            _preview_burst_fetches=set(),
+            _preview_burst_latest={},
+            auto_chat_running=True,
+            account="圆子",
+            gateway=SimpleNamespace(
+                call=lambda account, function, options, **kwargs: (
+                    calls.append((account, function, options, kwargs))
+                    or GatewayResult(True, visible)
+                ),
+            ),
+            _accept_auto_message=accepted.append,
+            _run_future=lambda value, callback: callback(value),
+        )
+        preview = IncomingMessage(
+            "芝士圆子",
+            "对方",
+            "喜欢西瓜还是香蕉",
+            "2026-08-10T18:44:00",
+        )
+
+        with patch("mybot_ui.app_v2.operations.event") as event:
+            MainWindow._fetch_preview_messages(
+                window,
+                "芝士圆子",
+                "不需要，刚刚反应慢了，下次秒回主人|18:22",
+                preview,
+                "喜欢西瓜还是香蕉|18:44",
+            )
+
+        self.assertEqual(
+            [
+                "你在干嘛",
+                "你喜欢爸爸还是妈妈",
+                "你喜欢甜豆腐脑还是咸豆腐脑",
+                "喜欢西瓜还是香蕉",
+            ],
+            [message.content for message in accepted],
+        )
+        self.assertEqual("GetVisibleChatMessages", calls[0][1])
+        self.assertEqual({"who": "芝士圆子"}, calls[0][2])
+        self.assertEqual({"timeout_seconds": 20}, calls[0][3])
+        event.assert_called_once_with(
+            "workflow",
+            "preview_burst_recovered",
+            {
+                "chat_title": "芝士圆子",
+                "accepted": 4,
+                "fingerprint": "喜欢西瓜还是香蕉|18:44",
+            },
+        )
+
+    def test_preview_change_during_recovery_runs_a_follow_up_fetch(self):
+        callbacks = []
+        calls = []
+        window = SimpleNamespace(
+            _preview_burst_fetches=set(),
+            _preview_burst_latest={},
+            auto_chat_running=True,
+            account="圆子",
+            gateway=SimpleNamespace(
+                call=lambda *args, **kwargs: calls.append((args, kwargs)) or object()
+            ),
+            _accept_auto_message=lambda _incoming: None,
+            _run_future=lambda _value, callback: callbacks.append(callback),
+        )
+        first = IncomingMessage("芝士圆子", "对方", "问题一", "2026-08-10T18:44:00")
+        second = IncomingMessage("芝士圆子", "对方", "问题二", "2026-08-10T18:44:01")
+
+        MainWindow._fetch_preview_messages(window, "芝士圆子", "旧消息|18:43", first, "问题一|18:44")
+        MainWindow._fetch_preview_messages(window, "芝士圆子", "问题一|18:44", second, "问题二|18:44")
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual("问题二|18:44", window._preview_burst_latest["芝士圆子"][2])
+        callbacks[0](GatewayResult(True, [
+            {"who": "对方", "message": "旧消息", "unique_string": "old"},
+            {"who": "对方", "message": "问题一", "unique_string": "one"},
+            {"who": "对方", "message": "问题二", "unique_string": "two"},
+        ]))
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual(2, len(callbacks))
+
     def test_preview_polling_pauses_while_a_reply_is_active(self):
         calls = []
         window = SimpleNamespace(
@@ -84,7 +214,7 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
     def test_image_preview_fetches_original_instead_of_waiting_forever(self):
         fetched = []
         result = GatewayResult(True, [{
-            "conversation_title": "测试联系人甲",
+            "conversation_title": "芝士圆子",
             "conversation_content": "[图片]",
             "time": "16:55",
         }])
@@ -93,11 +223,11 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             _preview_poll_pending=False,
             gateway=SimpleNamespace(connected=True, call=lambda *_args: result),
             account="圆子",
-            _preview_snapshots={"测试联系人甲": "旧消息|16:54"},
+            _preview_snapshots={"芝士圆子": "旧消息|16:54"},
             _auto_chat_sent_contents={},
             _preview_suppressed_until={},
             _auto_chat_groups=set(),
-            _selected_auto_chat_targets=lambda: {"测试联系人甲"},
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
             _message_cursor=ListenerMessageCursor(),
             _fetch_preview_image=lambda title, stamp, fingerprint="": fetched.append(
                 (title, stamp, fingerprint)
@@ -108,7 +238,7 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
 
         MainWindow._poll_auto_chat_previews(window)
 
-        self.assertEqual([("测试联系人甲", "16:55", "[图片]|16:55")], fetched)
+        self.assertEqual([("芝士圆子", "16:55", "[图片]|16:55")], fetched)
 
     def test_preview_original_is_converted_to_visual_incoming_message(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -144,10 +274,10 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             with patch("mybot_ui.app_v2.operations.start", return_value="span"), patch(
                 "mybot_ui.app_v2.operations.finish"
             ), patch("mybot_ui.app_v2.operations.event"):
-                MainWindow._fetch_preview_image(window, "测试联系人甲", "16:55")
+                MainWindow._fetch_preview_image(window, "芝士圆子", "16:55")
 
             self.assertEqual("GetLatestOriginalImage", calls[0][1])
-            self.assertEqual({"who": "测试联系人甲"}, calls[0][2])
+            self.assertEqual({"who": "芝士圆子"}, calls[0][2])
             self.assertEqual(1, len(accepted))
             self.assertTrue(accepted[0].image_base64)
             self.assertEqual("original.png", accepted[0].attachments[0].name)
@@ -155,7 +285,7 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
     def test_failed_image_preview_is_retried_without_a_new_fingerprint(self):
         fetched = []
         result = GatewayResult(True, [{
-            "conversation_title": "测试联系人甲",
+            "conversation_title": "芝士圆子",
             "conversation_content": "[图片]",
             "time": "18:27",
         }])
@@ -164,14 +294,14 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             _preview_poll_pending=False,
             gateway=SimpleNamespace(connected=True, call=lambda *_args: result),
             account="圆子",
-            _preview_snapshots={"测试联系人甲": "[图片]|18:27"},
-            _preview_image_retries={"测试联系人甲": ("[图片]|18:27", 1, 99.0)},
+            _preview_snapshots={"芝士圆子": "[图片]|18:27"},
+            _preview_image_retries={"芝士圆子": ("[图片]|18:27", 1, 99.0)},
             _preview_image_completed={},
             _latest_incoming_media={},
             _auto_chat_sent_contents={},
             _preview_suppressed_until={},
             _auto_chat_groups=set(),
-            _selected_auto_chat_targets=lambda: {"测试联系人甲"},
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
             _message_cursor=ListenerMessageCursor(),
             _fetch_preview_image=lambda title, stamp, fingerprint="": fetched.append(
                 (title, stamp, fingerprint)
@@ -183,15 +313,15 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
         with patch("mybot_ui.app_v2.time.monotonic", return_value=100.0):
             MainWindow._poll_auto_chat_previews(window)
 
-        self.assertEqual([("测试联系人甲", "18:27", "[图片]|18:27")], fetched)
+        self.assertEqual([("芝士圆子", "18:27", "[图片]|18:27")], fetched)
 
     def test_real_image_is_not_dropped_by_an_older_outgoing_image_marker(self):
         accepted = []
         logs = []
         cursor = ListenerMessageCursor()
-        cursor.record_outgoing_media("测试联系人甲", "[图片]")
+        cursor.record_outgoing_media("芝士圆子", "[图片]")
         incoming = IncomingMessage(
-            chat_title="测试联系人甲",
+            chat_title="芝士圆子",
             who="对方",
             content="[图片]",
             send_date="2026-08-09T16:36:04",
@@ -199,20 +329,64 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             image_base64="aW1hZ2U=",
         )
         window = SimpleNamespace(
-            _selected_auto_chat_targets=lambda: {"测试联系人甲"},
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
             reply_keyword=SimpleNamespace(text=lambda: ""),
             _message_cursor=cursor,
             attachment_store=None,
             _append_chat=lambda *args: logs.append(args),
-            _auto_chat_queues={"测试联系人甲": deque()},
+            _auto_chat_queues={"芝士圆子": deque()},
             _process_next_auto_message=lambda title: accepted.append(title),
         )
 
         MainWindow._accept_auto_message(window, incoming)
 
-        self.assertEqual(["测试联系人甲"], accepted)
-        self.assertEqual(1, len(window._auto_chat_queues["测试联系人甲"]))
+        self.assertEqual(["芝士圆子"], accepted)
+        self.assertEqual(1, len(window._auto_chat_queues["芝士圆子"]))
         self.assertTrue(any("含图片" in message for _kind, message in logs))
+
+    def test_file_only_message_is_stored_and_deferred_until_instruction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "test20260810.txt"
+            source.write_text("123", encoding="utf-8")
+            store = ConversationAttachmentStore(root / "private")
+            queued = deque()
+            processed = []
+            incoming = IncomingMessage(
+                chat_title="MyBot测试群2",
+                who="芝士圆子",
+                content="文件\ntest20260810.txt\n3B\n微信电脑版",
+                send_date="2026-08-10T18:05:00",
+                message_type=4,
+                attachments=(IncomingAttachment(source.name, str(source), "file"),),
+            )
+            window = SimpleNamespace(
+                _selected_auto_chat_targets=lambda: {"MyBot测试群2"},
+                reply_keyword=SimpleNamespace(text=lambda: ""),
+                _message_cursor=ListenerMessageCursor(),
+                attachment_store=store,
+                _append_chat=lambda *_args: None,
+                _refresh_attachment_list=lambda: None,
+                _auto_chat_queues={"MyBot测试群2": queued},
+                _process_next_auto_message=processed.append,
+            )
+
+            with patch("mybot_ui.app_v2.operations.event") as event:
+                MainWindow._accept_auto_message(window, incoming)
+
+            self.assertEqual([], list(queued))
+            self.assertEqual([], processed)
+            self.assertTrue(any(
+                call.args[:2] == ("attachment", "attachment_only_deferred")
+                for call in event.call_args_list
+            ))
+            resolved = store.for_request(
+                "MyBot测试群2",
+                "你把这个文档改一下，在里面加一首打油诗",
+                received_at="2026-08-10T18:05:05",
+            )
+            self.assertEqual(1, len(resolved))
+            self.assertEqual("123", Path(resolved[0].path).read_text(encoding="utf-8"))
 
     def test_reconnect_resumes_without_invalidating_active_tasks(self):
         starts = []
@@ -231,7 +405,7 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             ),
             account="",
             auto_chat_running=True,
-            _listener_targets={"测试联系人甲"},
+            _listener_targets={"芝士圆子"},
             _set_connection=lambda *_args: None,
             _append_chat=lambda *_args: None,
             _refresh_auto_chat_targets=lambda: None,
@@ -257,11 +431,11 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             _resume_auto_chat_after_reconnect=True,
             _preview_timer=timer,
             _preview_poll_pending=True,
-            _auto_chat_pending={"测试联系人甲": 1},
+            _auto_chat_pending={"芝士圆子": 1},
             _auto_chat_active_tasks={"task"},
-            _auto_chat_queues={"测试联系人甲": deque(["message"])},
+            _auto_chat_queues={"芝士圆子": deque(["message"])},
             _auto_reply_spans={"task": "reply-span"},
-            _selected_auto_chat_targets=lambda: {"测试联系人甲"},
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
             _set_auto_chat_ui_state=lambda state, *_args: states.append(state),
             _append_chat=lambda role, text: messages.append((role, text)),
             gateway=SimpleNamespace(
@@ -299,17 +473,17 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             ))
 
     def test_manual_restart_preserves_preview_baseline_for_messages_received_while_stopped(self):
-        snapshots = {"测试联系人甲": "旧消息|13:35"}
+        snapshots = {"芝士圆子": "旧消息|13:35"}
         timer = SimpleNamespace(start=lambda: None)
         window = SimpleNamespace(
-            _selected_auto_chat_targets=lambda: {"测试联系人甲"},
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
             _auto_selection_save_timer=SimpleNamespace(stop=lambda: None),
             _persist_auto_chat_selection=lambda: None,
             _model_config=lambda: ModelConfig(model="gpt-5.6-sol"),
-            account="测试账号",
+            account="圆子",
             gateway=SimpleNamespace(connected=True),
             _set_auto_chat_ui_state=lambda *_args, **_kwargs: None,
-            _listener_targets={"测试联系人甲"},
+            _listener_targets={"芝士圆子"},
             _run_gateway_sequence=lambda _calls, callback: callback(GatewayResult(True, True)),
             _auto_chat_session=2,
             auto_chat_running=False,
@@ -329,28 +503,65 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             MainWindow._start_auto_chat(window)
 
         self.assertTrue(window.auto_chat_running)
-        self.assertEqual({"测试联系人甲": "旧消息|13:35"}, window._preview_snapshots)
+        self.assertEqual({"芝士圆子": "旧消息|13:35"}, window._preview_snapshots)
+
+    def test_recovery_restart_preserves_outgoing_echo_state(self):
+        cursor = ListenerMessageCursor()
+        cursor.record_outgoing("芝士圆子", "刚发出的回复")
+        sent_contents = {"芝士圆子": "刚发出的回复"}
+        suppressed_until = {"芝士圆子": 123.0}
+        window = SimpleNamespace(
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
+            _auto_selection_save_timer=SimpleNamespace(stop=lambda: None),
+            _persist_auto_chat_selection=lambda: None,
+            _model_config=lambda: ModelConfig(model="gpt-5.6-sol"),
+            account="圆子",
+            gateway=SimpleNamespace(connected=True),
+            _set_auto_chat_ui_state=lambda *_args, **_kwargs: None,
+            _listener_targets={"芝士圆子"},
+            _run_gateway_sequence=lambda _calls, callback: callback(GatewayResult(True, True)),
+            _auto_chat_session=2,
+            auto_chat_running=True,
+            _append_chat=lambda *_args: None,
+            _preview_snapshots={"芝士圆子": "旧消息|13:35"},
+            _preview_poll_pending=False,
+            _preview_backoff_until=0.0,
+            _auto_chat_sent_contents=sent_contents,
+            _preview_suppressed_until=suppressed_until,
+            _message_cursor=cursor,
+            _preview_timer=SimpleNamespace(start=lambda: None),
+        )
+
+        with patch("mybot_ui.app_v2.operations.start", return_value="span"), patch(
+            "mybot_ui.app_v2.operations.finish"
+        ):
+            MainWindow._start_auto_chat(window, preserve_session=True)
+
+        self.assertEqual(2, window._auto_chat_session)
+        self.assertEqual({"芝士圆子": "刚发出的回复"}, sent_contents)
+        self.assertEqual({"芝士圆子": 123.0}, suppressed_until)
+        self.assertTrue(cursor.is_outgoing_echo("芝士圆子", "刚发出的回复"))
 
     def test_first_start_captures_baseline_before_enabling_listener(self):
         calls = []
         preview = GatewayResult(True, [{
-            "conversation_title": "测试联系人甲",
+            "conversation_title": "芝士圆子",
             "conversation_content": "启动前的消息",
             "time": "13:35",
         }])
         window = SimpleNamespace(
-            _selected_auto_chat_targets=lambda: {"测试联系人甲"},
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
             _auto_selection_save_timer=SimpleNamespace(stop=lambda: None),
             _persist_auto_chat_selection=lambda: None,
             _model_config=lambda: ModelConfig(model="gpt-5.6-sol"),
-            account="测试账号",
+            account="圆子",
             gateway=SimpleNamespace(
                 connected=True,
                 call=lambda _account, function, _options, **kwargs: calls.append((function, kwargs)) or preview,
             ),
             _run_future=lambda value, callback: callback(value),
             _set_auto_chat_ui_state=lambda *_args, **_kwargs: None,
-            _listener_targets={"测试联系人甲"},
+            _listener_targets={"芝士圆子"},
             _run_gateway_sequence=lambda _calls, callback: callback(GatewayResult(True, True)),
             _auto_chat_session=2,
             auto_chat_running=False,
@@ -370,7 +581,7 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             MainWindow._start_auto_chat(window)
 
         self.assertEqual([("GetVisibleConversations", {"timeout_seconds": 20})], calls)
-        self.assertEqual({"测试联系人甲": "启动前的消息|13:35"}, window._preview_snapshots)
+        self.assertEqual({"芝士圆子": "启动前的消息|13:35"}, window._preview_snapshots)
         self.assertTrue(window.auto_chat_running)
 
     def test_listener_and_preview_surfaces_dedupe_same_bubble(self):
@@ -384,7 +595,7 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
         )
         first = SimpleNamespace(
             chat_title="人工智能自动化技术讨论群",
-            who="测试联系人甲",
+            who="芝士圆子",
             content="发个可爱联盟的",
             feature="listener-timestamp",
             send_date="2026-08-10T09:21:23",
@@ -410,8 +621,8 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             True,
             [
                 {
-                    "ConversationTitle": "测试群聊",
-                    "ConversationContent": "测试联系人甲: 新消息",
+                    "ConversationTitle": "MyBot测试群2",
+                    "ConversationContent": "芝士圆子: 新消息",
                     "NotReadNumbr": 1,
                     "Time": "18:20",
                 }
@@ -423,10 +634,10 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             _preview_poll_pending=False,
             gateway=gateway,
             account="圆子",
-            _preview_snapshots={"测试群聊": "旧消息|18:19"},
+            _preview_snapshots={"MyBot测试群2": "旧消息|18:19"},
             _auto_chat_sent_contents={},
-            _auto_chat_groups={"测试群聊"},
-            _selected_auto_chat_targets=lambda: {"测试群聊"},
+            _auto_chat_groups={"MyBot测试群2"},
+            _selected_auto_chat_targets=lambda: {"MyBot测试群2"},
             _accept_auto_message=accepted.append,
             _run_future=lambda value, callback: callback(value),
         )
@@ -435,13 +646,13 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
 
         self.assertFalse(window._preview_poll_pending)
         self.assertEqual(1, len(accepted))
-        self.assertEqual("测试联系人甲", accepted[0].who)
+        self.assertEqual("芝士圆子", accepted[0].who)
         self.assertEqual("新消息", accepted[0].content)
 
     def test_outgoing_media_preview_is_not_treated_as_incoming(self):
         accepted = []
         result = GatewayResult(True, [{
-            "conversation_title": "测试联系人甲",
+            "conversation_title": "芝士圆子",
             "conversation_content": "[文件] result.txt",
             "time": "18:20",
         }])
@@ -450,11 +661,11 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             _preview_poll_pending=False,
             gateway=SimpleNamespace(connected=True, call=lambda *_args: result),
             account="圆子",
-            _preview_snapshots={"测试联系人甲": "旧消息|18:19"},
+            _preview_snapshots={"芝士圆子": "旧消息|18:19"},
             _auto_chat_sent_contents={},
-            _preview_suppressed_until={"测试联系人甲": 110.0},
+            _preview_suppressed_until={"芝士圆子": 110.0},
             _auto_chat_groups=set(),
-            _selected_auto_chat_targets=lambda: {"测试联系人甲"},
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
             _accept_auto_message=accepted.append,
             _run_future=lambda value, callback: callback(value),
         )
@@ -463,7 +674,7 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             MainWindow._poll_auto_chat_previews(window)
 
         self.assertEqual([], accepted)
-        self.assertEqual("[文件] result.txt|18:20", window._preview_snapshots["测试联系人甲"])
+        self.assertEqual("[文件] result.txt|18:20", window._preview_snapshots["芝士圆子"])
 
     def test_codex_output_file_is_sent_to_originating_conversation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -491,15 +702,15 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             with patch("mybot_ui.app_v2.QTimer.singleShot", side_effect=lambda _delay, callback: callback()):
                 MainWindow._send_codex_output_files(
                     window,
-                    SimpleNamespace(chat_title="测试联系人甲"),
+                    SimpleNamespace(chat_title="芝士圆子"),
                     3,
                     result,
                     after_sent=lambda sent, failed: completed.append((sent, failed)),
                 )
 
             self.assertEqual("SendFile", calls[0][1])
-            self.assertEqual("测试联系人甲", calls[0][2]["who"])
-            self.assertEqual(["测试联系人甲"], suppressed)
+            self.assertEqual("芝士圆子", calls[0][2]["who"])
+            self.assertEqual(["芝士圆子"], suppressed)
             self.assertEqual([(("result.txt",), ())], completed)
 
     def test_codex_file_completion_is_one_safe_message(self):
@@ -514,7 +725,7 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
 
         MainWindow._send_codex_delivery_completion(
             window,
-            SimpleNamespace(chat_title="测试联系人甲"),
+            SimpleNamespace(chat_title="芝士圆子"),
             3,
             ("MyBot功能列表.md",),
             (),
@@ -533,38 +744,38 @@ class AutoChatStartupTests(unittest.TestCase):
         window = SimpleNamespace(
             settings={"chat": {
                 "auto_start_enabled": True,
-                "auto_start_targets": ["测试联系人甲"],
+                "auto_start_targets": ["芝士圆子"],
             }},
             _auto_start_attempted=False,
         )
 
-        selected = MainWindow._consume_auto_start_targets(window, {"测试联系人甲", "其他会话"})
-        repeated = MainWindow._consume_auto_start_targets(window, {"测试联系人甲"})
+        selected = MainWindow._consume_auto_start_targets(window, {"芝士圆子", "其他会话"})
+        repeated = MainWindow._consume_auto_start_targets(window, {"芝士圆子"})
 
-        self.assertEqual({"测试联系人甲"}, selected)
+        self.assertEqual({"芝士圆子"}, selected)
         self.assertEqual(set(), repeated)
 
     def test_missing_or_disabled_contact_does_not_start(self):
         missing = SimpleNamespace(
-            settings={"chat": {"auto_start_enabled": True, "auto_start_targets": ["测试联系人甲"]}},
+            settings={"chat": {"auto_start_enabled": True, "auto_start_targets": ["芝士圆子"]}},
             _auto_start_attempted=False,
         )
         disabled = SimpleNamespace(
-            settings={"chat": {"auto_start_enabled": False, "auto_start_targets": ["测试联系人甲"]}},
+            settings={"chat": {"auto_start_enabled": False, "auto_start_targets": ["芝士圆子"]}},
             _auto_start_attempted=False,
         )
 
         self.assertEqual(set(), MainWindow._consume_auto_start_targets(missing, {"其他会话"}))
-        self.assertEqual(set(), MainWindow._consume_auto_start_targets(disabled, {"测试联系人甲"}))
+        self.assertEqual(set(), MainWindow._consume_auto_start_targets(disabled, {"芝士圆子"}))
 
     def test_disabled_auto_start_still_restores_last_selection(self):
         window = SimpleNamespace(
-            settings={"chat": {"auto_start_enabled": False, "auto_start_targets": ["测试联系人甲"]}},
+            settings={"chat": {"auto_start_enabled": False, "auto_start_targets": ["芝士圆子"]}},
         )
 
         self.assertEqual(
-            {"测试联系人甲"},
-            MainWindow._configured_auto_chat_targets(window, {"测试联系人甲", "其他会话"}),
+            {"芝士圆子"},
+            MainWindow._configured_auto_chat_targets(window, {"芝士圆子", "其他会话"}),
         )
 
     def test_last_selection_is_written_without_losing_other_chat_settings(self):
@@ -577,14 +788,34 @@ class AutoChatStartupTests(unittest.TestCase):
             window = SimpleNamespace(
                 config_path=config_path,
                 settings={"chat": {"auto_start_enabled": True, "cooldown_seconds": 2}},
-                _selected_auto_chat_targets=lambda: {"测试联系人甲", "测试群"},
+                _auto_chat_targets_loaded=True,
+                _selected_auto_chat_targets=lambda: {"芝士圆子", "测试群"},
             )
 
             MainWindow._persist_auto_chat_selection(window)
 
             saved = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(["测试群", "测试联系人甲"], saved["chat"]["auto_start_targets"])
+            self.assertEqual(["测试群", "芝士圆子"], saved["chat"]["auto_start_targets"])
             self.assertEqual(2, saved["chat"]["cooldown_seconds"])
+
+    def test_unloaded_target_list_does_not_erase_saved_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            config_path.write_text(
+                json.dumps({"chat": {"auto_start_targets": ["芝士圆子"]}}),
+                encoding="utf-8",
+            )
+            window = SimpleNamespace(
+                config_path=config_path,
+                settings={"chat": {"auto_start_targets": ["芝士圆子"]}},
+                _auto_chat_targets_loaded=False,
+                _selected_auto_chat_targets=lambda: set(),
+            )
+
+            MainWindow._persist_auto_chat_selection(window)
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(["芝士圆子"], saved["chat"]["auto_start_targets"])
 
 
 class AutoChatModelRoutingTests(unittest.TestCase):
@@ -617,7 +848,7 @@ class AutoChatModelRoutingTests(unittest.TestCase):
 
     def test_typo_image_edit_request_routes_directly_to_image_editor(self):
         incoming = IncomingMessage(
-            "测试联系人甲",
+            "芝士圆子",
             "对方",
             "我在等你吧必胜客改成肯德基",
         )
@@ -626,37 +857,37 @@ class AutoChatModelRoutingTests(unittest.TestCase):
         with patch("mybot_ui.app_v2.operations.start", return_value="span"), patch(
             "mybot_ui.app_v2.operations.event"
         ) as event:
-            MainWindow._process_next_auto_message(window, "测试联系人甲")
+            MainWindow._process_next_auto_message(window, "芝士圆子")
 
         self.assertEqual((incoming, incoming.content), submitted[0][1])
         self.assertEqual("edited", finished[0][3])
-        self.assertEqual(incoming.content, window._pending_image_edits["测试联系人甲"][0])
+        self.assertEqual(incoming.content, window._pending_image_edits["芝士圆子"][0])
         self.assertEqual(1, len(remembered))
         event.assert_called_once_with(
             "workflow",
             "image_edit_route",
-            {"chat_title": "测试联系人甲", "source": "explicit"},
+            {"chat_title": "芝士圆子", "source": "explicit"},
         )
 
     def test_followup_resumes_pending_image_edit_request(self):
         request = "把必胜客改成肯德基"
-        incoming = IncomingMessage("测试联系人甲", "对方", "我上面不是发了吗")
+        incoming = IncomingMessage("芝士圆子", "对方", "我上面不是发了吗")
         window, submitted, finished, _remembered = self._image_edit_window(
             incoming,
-            pending={"测试联系人甲": (request, 100.0)},
+            pending={"芝士圆子": (request, 100.0)},
         )
 
         with patch("mybot_ui.app_v2.time.monotonic", return_value=120.0), patch(
             "mybot_ui.app_v2.operations.start", return_value="span"
         ), patch("mybot_ui.app_v2.operations.event") as event:
-            MainWindow._process_next_auto_message(window, "测试联系人甲")
+            MainWindow._process_next_auto_message(window, "芝士圆子")
 
         self.assertEqual((incoming, request), submitted[0][1])
         self.assertEqual("edited", finished[0][3])
         event.assert_called_once_with(
             "workflow",
             "image_edit_route",
-            {"chat_title": "测试联系人甲", "source": "pending_followup"},
+            {"chat_title": "芝士圆子", "source": "pending_followup"},
         )
 
     def test_image_edit_uses_private_saved_image_when_sdk_fetch_fails(self):
@@ -667,7 +898,7 @@ class AutoChatModelRoutingTests(unittest.TestCase):
             source_path.write_bytes(b"\x89PNG\r\n\x1a\nrestaurant")
             store = ConversationAttachmentStore(root / "attachments")
             remembered = store.remember(
-                "测试联系人甲",
+                "芝士圆子",
                 (IncomingAttachment(source_path.name, str(source_path), "image"),),
             )
             edit_calls = []
@@ -686,7 +917,7 @@ class AutoChatModelRoutingTests(unittest.TestCase):
                 _image_config=lambda: "image-config",
             )
             incoming = IncomingMessage(
-                "测试联系人甲",
+                "芝士圆子",
                 "对方",
                 "我上面不是发了吗",
                 send_date="2026-08-09T15:31:34+08:00",
@@ -707,7 +938,7 @@ class AutoChatModelRoutingTests(unittest.TestCase):
     def test_codex_transition_prompt_uses_persona_examples_and_ranked_memory(self):
         incoming = SimpleNamespace(
             chat_title="人工智能自动化技术讨论群",
-            who="测试联系人甲",
+            who="芝士圆子",
             content="帮我把这个功能实现了",
         )
         window = SimpleNamespace(
@@ -718,11 +949,11 @@ class AutoChatModelRoutingTests(unittest.TestCase):
                     "与当前话题相关的个人偏好",
                     "与当前话题最相关的过往互动",
                 ],
-                ["identity:圆子", "learned:测试联系人甲", "episodes:测试联系人甲"],
-                "测试联系人甲",
+                ["identity:圆子", "learned:芝士圆子", "episodes:芝士圆子"],
+                "芝士圆子",
             ),
             _model_config=lambda: ModelConfig(system_prompt="基础提示"),
-            memory=SimpleNamespace(transcript=lambda *_args, **_kwargs: "测试联系人甲: 上次也做过类似功能"),
+            memory=SimpleNamespace(transcript=lambda *_args, **_kwargs: "芝士圆子: 上次也做过类似功能"),
         )
 
         with patch("mybot_ui.app_v2.operations.event") as event:
@@ -736,10 +967,10 @@ class AutoChatModelRoutingTests(unittest.TestCase):
         event.assert_called_once()
 
     def test_codex_result_prompt_preserves_facts_while_humanizing(self):
-        incoming = SimpleNamespace(chat_title="测试联系人甲", who="对方", content="修一下")
+        incoming = SimpleNamespace(chat_title="芝士圆子", who="对方", content="修一下")
         window = SimpleNamespace(
             _auto_chat_groups=set(),
-            _resolved_persona_messages=lambda _incoming: (["圆子人格"], ["identity:圆子"], "测试联系人甲"),
+            _resolved_persona_messages=lambda _incoming: (["圆子人格"], ["identity:圆子"], "芝士圆子"),
             _model_config=lambda: ModelConfig(system_prompt="基础提示"),
             memory=SimpleNamespace(transcript=lambda *_args, **_kwargs: ""),
         )
@@ -765,22 +996,41 @@ class AutoChatModelRoutingTests(unittest.TestCase):
             "这个任务需要一些时间，我处理完成后把结果发给你"
         ))
         self.assertFalse(MainWindow._valid_codex_acknowledgement("后台已经处理好了"))
+        self.assertFalse(MainWindow._valid_codex_acknowledgement(
+            "稍等，我去看一下",
+            "你把这个文档改一下，在里面加一首打油诗",
+        ))
+        self.assertTrue(MainWindow._valid_codex_acknowledgement(
+            "行，我给你加一首",
+            "你把这个文档改一下，在里面加一首打油诗",
+        ))
 
-    def test_codex_start_sends_router_ack_without_calling_ack_model(self):
+    def test_codex_start_generates_persona_ack_in_parallel_with_task(self):
         codex_future = Future()
+        acknowledgement_future = Future()
+        acknowledgement_future.set_result("行，我给你加一首")
         runner = object()
+        backup_model = object()
         started = []
+        acknowledgement_calls = []
         incoming = SimpleNamespace(
-            chat_title="测试联系人甲",
-            who="测试联系人甲",
+            chat_title="芝士圆子",
+            who="芝士圆子",
             content="写个功能列表到md文件发给我",
             send_date="2026-08-09T20:53:59",
         )
         window = SimpleNamespace(
             _auto_chat_groups=set(),
             _codex_runner=lambda: runner,
+            model_client=SimpleNamespace(generate=lambda *_args, **_kwargs: "行，我给你加一首"),
+            _model_config=lambda: object(),
+            _backup_model_config=lambda: backup_model,
+            _persona_task_messages=lambda *_args, **_kwargs: [{"role": "user", "content": "ack"}],
             memory=SimpleNamespace(transcript=lambda *_args, **_kwargs: ""),
             codex_executor=SimpleNamespace(submit=lambda _callable: codex_future),
+            model_executor=SimpleNamespace(submit=lambda *args, **kwargs: (
+                acknowledgement_calls.append((args, kwargs)) or acknowledgement_future
+            )),
             _finish_auto_codex_ack=lambda *args: started.append(args),
         )
 
@@ -788,12 +1038,15 @@ class AutoChatModelRoutingTests(unittest.TestCase):
             MainWindow._start_auto_codex(window, incoming, 7, route_source="router")
 
         self.assertEqual(1, len(started))
-        self.assertIs(codex_future, started[0][0])
-        self.assertIs(runner, started[0][1])
-        self.assertTrue(started[0][-1])
+        self.assertEqual(1, len(acknowledgement_calls))
+        self.assertIs(backup_model, acknowledgement_calls[0][0][1])
+        self.assertIs(acknowledgement_future, started[0][0])
+        self.assertIs(codex_future, started[0][1])
+        self.assertIs(runner, started[0][2])
+        self.assertTrue(any(word in started[0][-2] for word in ("写", "整理", "弄")))
         self.assertNotEqual(
             "这个任务需要一些时间，我处理完成后把结果发给你",
-            started[0][-1],
+            started[0][-2],
         )
 
     def test_codex_result_fact_lock_rejects_changed_test_count_meaning(self):
@@ -868,7 +1121,7 @@ class AutoChatModelRoutingTests(unittest.TestCase):
 
     def test_sticker_inflight_and_cooldown_suppress_concurrent_duplicates(self):
         finished = []
-        incoming = SimpleNamespace(chat_title="测试联系人甲", who="测试联系人甲")
+        incoming = SimpleNamespace(chat_title="芝士圆子", who="芝士圆子")
         window = SimpleNamespace(
             _sticker_in_flight={},
             _sticker_last_sent={},
@@ -880,7 +1133,7 @@ class AutoChatModelRoutingTests(unittest.TestCase):
         ) as event:
             self.assertTrue(MainWindow._reserve_auto_sticker(window, incoming))
             self.assertFalse(MainWindow._reserve_auto_sticker(window, incoming))
-            MainWindow._release_auto_sticker(window, "测试联系人甲", sent=True)
+            MainWindow._release_auto_sticker(window, "芝士圆子", sent=True)
             self.assertFalse(MainWindow._reserve_auto_sticker(window, incoming))
 
         self.assertEqual(2, len(finished))
@@ -890,7 +1143,7 @@ class AutoChatModelRoutingTests(unittest.TestCase):
 
     def test_realtime_weather_bypasses_model_and_codex(self):
         incoming = SimpleNamespace(
-            chat_title="测试联系人甲",
+            chat_title="芝士圆子",
             who="对方",
             content="上海徐汇今天天气怎么样",
             image_base64="",
@@ -899,12 +1152,12 @@ class AutoChatModelRoutingTests(unittest.TestCase):
         finished = []
         remembered = []
         window = SimpleNamespace(
-            _auto_chat_queues={"测试联系人甲": deque([incoming])},
+            _auto_chat_queues={"芝士圆子": deque([incoming])},
             auto_chat_running=True,
             _auto_chat_pending=set(),
             reply_cooldown=SimpleNamespace(value=lambda: 0),
             _auto_chat_last_reply={},
-            _selected_auto_chat_targets=lambda: {"测试联系人甲"},
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
             _auto_chat_session=7,
             _auto_reply_spans={},
             account="圆子",
@@ -926,7 +1179,7 @@ class AutoChatModelRoutingTests(unittest.TestCase):
         with patch("mybot_ui.app_v2.operations.start", return_value="span"), patch(
             "mybot_ui.app_v2.operations.event"
         ) as event:
-            MainWindow._process_next_auto_message(window, "测试联系人甲")
+            MainWindow._process_next_auto_message(window, "芝士圆子")
 
         self.assertEqual("weather", submitted[0][1].kind)
         self.assertEqual("上海徐汇今天天气怎么样", submitted[0][1].query)
@@ -935,14 +1188,14 @@ class AutoChatModelRoutingTests(unittest.TestCase):
         event.assert_called_once_with(
             "tool",
             "realtime_tool_route",
-            {"chat_title": "测试联系人甲", "kind": "weather"},
+            {"chat_title": "芝士圆子", "kind": "weather"},
         )
 
     def test_realtime_tool_ack_is_immediate_and_natural(self):
         calls = []
         continued = []
         remembered = []
-        incoming = SimpleNamespace(chat_title="测试群聊", who="测试联系人甲")
+        incoming = SimpleNamespace(chat_title="MyBot测试群2", who="芝士圆子")
         window = SimpleNamespace(
             account="圆子",
             gateway=SimpleNamespace(call=lambda account, function, options: (
@@ -963,13 +1216,13 @@ class AutoChatModelRoutingTests(unittest.TestCase):
         self.assertEqual("SendMessage", calls[0][1])
         self.assertEqual("稍等，我去看一下", calls[0][2]["message"])
         self.assertEqual([("future", incoming, 7)], continued)
-        self.assertEqual([("测试群聊", "稍等，我去看一下")], remembered)
+        self.assertEqual([("MyBot测试群2", "稍等，我去看一下")], remembered)
 
     def test_model_delegate_marker_hands_original_message_to_codex(self):
         delegated = []
         future = Future()
         future.set_result("<MYBOT_DELEGATE_CODEX>")
-        incoming = SimpleNamespace(chat_title="测试联系人甲", content="帮我核实这个最新消息")
+        incoming = SimpleNamespace(chat_title="芝士圆子", content="帮我核实这个最新消息")
         window = SimpleNamespace(
             _auto_chat_session=3,
             auto_chat_running=True,

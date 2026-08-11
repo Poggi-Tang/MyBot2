@@ -1,4 +1,4 @@
-﻿import json
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +10,7 @@ class OperationLogTests(unittest.TestCase):
     def test_start_and_finish_share_id_and_include_duration(self):
         with tempfile.TemporaryDirectory() as directory:
             logger = OperationLog(directory)
-            span = logger.start("gateway", "SendMessage", operation_id="request-1", details={"who": "测试联系人甲"})
+            span = logger.start("gateway", "SendMessage", operation_id="request-1", details={"who": "芝士圆子"})
             logger.finish(span, success=True, result=True)
 
             path = next(Path(directory).glob("client-operations-*.jsonl"))

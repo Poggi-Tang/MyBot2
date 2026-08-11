@@ -1,4 +1,4 @@
-﻿import json
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -62,16 +62,16 @@ class ExtensionAbilityStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store = ExtensionAbilityStore(root / "extensions")
-            candidate = self._candidate(root, secret=" Bearer example-token-123456")
+            candidate = self._candidate(root, secret=" sk-exampleSecret123456")
             with self.assertRaises(AbilityValidationError):
                 store.promote_candidate(candidate)
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store = ExtensionAbilityStore(root / "extensions")
-            candidate = self._candidate(root, secret=" 测试联系人甲")
+            candidate = self._candidate(root, secret=" 芝士圆子")
             with self.assertRaises(AbilityValidationError):
-                store.promote_candidate(candidate, forbidden_terms=("测试联系人甲",))
+                store.promote_candidate(candidate, forbidden_terms=("芝士圆子",))
 
     def test_digest_ignores_python_cache_files(self):
         with tempfile.TemporaryDirectory() as directory:

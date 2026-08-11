@@ -495,6 +495,11 @@ def parse_listener_event(
         if not isinstance(item, dict):
             continue
         who = repair_wechat_sdk_text(item.get("who") or item.get("sender") or "")
+        # The SDK sometimes omits the sender on fresh OCR callbacks even
+        # though the message body and timestamp are valid. Preserve the live
+        # message; outgoing-echo suppression still prevents self-replies.
+        if not who:
+            who = "对方"
         content = repair_wechat_sdk_text(item.get("message") or item.get("text") or "")
         image_base64 = str(
             item.get("image_base64_str")
@@ -526,6 +531,11 @@ def parse_listener_event(
                 path=image_file,
                 kind=media_kind,
             ))
+        # WeChatAuto4_X reports file-only callbacks with DateTime.MinValue.
+        # The callback itself is live, so use its arrival time while retaining
+        # strict timestamp validation for ordinary text messages.
+        if attachments and (send_date is None or send_date.year <= 1):
+            send_date = current_time
         if (
             not chat_title
             or not content
@@ -547,10 +557,22 @@ def parse_listener_event(
                 tuple(attachments),
             )
         )
-    # The SDK's first OCR callback can contain a batch of historical bubbles.
-    # One callback represents one conversation update, so answer only its newest
-    # credible inbound message instead of generating a reply for every bubble.
-    return result[-1:]
+    if not result:
+        return []
+    # The first OCR callback can include historical bubbles, while a real burst
+    # can also contain several questions with the same second/minute timestamp.
+    # Keep the newest short burst and discard older context from the callback.
+    latest = max(
+        datetime.fromisoformat(message.send_date.replace("Z", "+00:00")).replace(tzinfo=None)
+        for message in result
+    )
+    return [
+        message
+        for message in result
+        if latest
+        - datetime.fromisoformat(message.send_date.replace("Z", "+00:00")).replace(tzinfo=None)
+        <= timedelta(seconds=10)
+    ]
 
 
 def _image_file_base64(value: str) -> str:

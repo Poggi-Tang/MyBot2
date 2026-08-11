@@ -622,6 +622,7 @@ namespace WeChatAuto.Components
 		private void SendMessageExt(UIA3Automation automation, string who, string message, OneOf<string, string[], List<string>> atUser = default, ChatRefer refer = null, CancellationToken cancellationToken = default)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
+			string targetTitle;
 			if (string.IsNullOrWhiteSpace(who))
 			{
 				var chatInfo = _Client.ChatContent.ChatHeader.GetTitleCore(automation);
@@ -629,16 +630,19 @@ namespace WeChatAuto.Components
 				{
 					return;
 				}
+				targetTitle = chatInfo.Title;
 			}
 			else
 			{
 				var result = _Client.Conversations.SearchWhoCore(automation, who);
 				if (!result)
 					throw new InvalidOperationException($"找不到会话：{who}");
+				targetTitle = who;
 			}
 			cancellationToken.ThrowIfCancellationRequested();
 			RandomWait.Wait(300, 1200);
 			SendMessageCore(automation, message, atUser, refer, cancellationToken);
+			_Client.MessageMonitor.RecordOutgoingMessageCore(automation, targetTitle, message);
 		}
 		public async Task SendFile(string who, string[] files)
 		{

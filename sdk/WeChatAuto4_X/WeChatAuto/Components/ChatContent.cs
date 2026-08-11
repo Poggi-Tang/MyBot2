@@ -215,6 +215,9 @@ namespace WeChatAuto.Components
         /// <param name="date">查询日期,如果不传，则是当天日期</param>
         /// <returns>返回<see cref="ChatSimpleMessage"/>列表</returns>
         public async Task<List<ChatSimpleMessage>> GetChatHistory(string who, DateTime date = default) => await _MessageList.GetChatHistory(who, date);
+
+        /// <summary>读取指定会话当前屏幕内可见的消息气泡。</summary>
+        public async Task<List<ChatSimpleMessage>> GetVisibleChatMessages(string who = "") => await _MessageList.GetVisibleChatMessages(who);
         /// <summary>
         /// 获取一段时间的(开始时间与结束时间)聊天历史记录
         /// </summary>

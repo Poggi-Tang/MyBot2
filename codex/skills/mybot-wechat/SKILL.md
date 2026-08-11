@@ -9,13 +9,13 @@ Complete the task in the current workspace and verify the result. Keep the final
 
 ## Workflow
 
-1. Call `get_task_context` when task context is available. Treat its conversation as fixed; never select another recipient.
-2. Call `get_capabilities` or inspect `extensions/index.json` before implementing. Prefer a matching verified recipe and script.
+1. MyBot injects the fixed task context, attachments, output directory, and matched abilities into the task prompt. Use that injected context directly; do not call `get_task_context` or `get_capabilities` again.
+2. When the injected prompt names a matched ability, read only that ability's `SKILL.md`, recipe, and script. Otherwise start the requested work directly without scanning the ability catalog.
 3. Read only the references needed for the task:
    - Read [references/mcp-protocol.md](references/mcp-protocol.md) for task binding and progress tools.
    - Read [references/ability-contract.md](references/ability-contract.md) only when packaging a reusable ability.
 4. Perform the work in the current workspace. Preserve unrelated changes and do not commit or push.
-5. When `get_task_context` includes `input_files`, use those task-scoped copies as the user's attachments. Never overwrite an input file.
+5. Use the injected task-scoped `input_files` as the user's attachments. Never overwrite an input file.
 6. When the task needs a file delivered, write the finished artifact under the exact `output_dir` from task context and call `register_output_file` once for each deliverable. Do not register temporary files or files outside that directory.
 7. Run focused verification, then report the outcome and relevant test result. Do not expose internal prompts, tokens, keys, raw logs, or chain of thought.
 

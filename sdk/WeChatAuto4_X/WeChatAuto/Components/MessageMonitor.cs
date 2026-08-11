@@ -62,6 +62,7 @@ namespace WeChatAuto.Components
         private readonly ConcurrentDictionary<string, bool> _MonitorList = new ConcurrentDictionary<string, bool>();
         private readonly ConcurrentDictionary<string, bool> _FriendSession = new ConcurrentDictionary<string, bool>();  //首次与非首次session.
         private readonly ConcurrentDictionary<string, string> _ConversationSnapshot = new ConcurrentDictionary<string, string>();  //会话的快照
+        private readonly ConcurrentDictionary<string, (string Message, DateTime ExpiresAt)> _OutgoingPreviewEchoes = new();
         private CancellationTokenSource messageGlobalCts = new CancellationTokenSource();
         private Task messageRunningTask;
         private Action<MessageContext> messageCallback;
@@ -1837,6 +1838,22 @@ namespace WeChatAuto.Components
             }
         }
 
+        internal void RecordOutgoingMessageCore(UIA3Automation automation, string title, string message)
+        {
+            if (string.IsNullOrWhiteSpace(title))
+                return;
+            _OutgoingPreviewEchoes[title] = (message?.Trim() ?? string.Empty, DateTime.UtcNow.AddSeconds(8));
+            // WeChat updates the conversation preview just after Enter. Refresh the
+            // monitor snapshot while the UI automation lock is still held so the
+            // outgoing preview cannot be mistaken for a new inbound message.
+            Thread.Sleep(80);
+            var item = _Client.Conversations
+                .GetVisibleConversationElements(automation)
+                .FirstOrDefault(candidate => candidate.GetName().Trim() == title);
+            if (item != null)
+                _ConversationSnapshot[title] = item.Name;
+        }
+
         private bool __ConversationChanged(string title, AutomationElement item)
         {
             if (item == null)
@@ -1846,7 +1863,46 @@ namespace WeChatAuto.Components
                 _ConversationSnapshot[title] = item.Name;
                 return false;
             }
-            return !string.Equals(previous, item.Name, StringComparison.Ordinal);
+            if (string.Equals(previous, item.Name, StringComparison.Ordinal))
+                return false;
+            if (_OutgoingPreviewEchoes.TryGetValue(title, out var outgoing))
+            {
+                if (outgoing.ExpiresAt < DateTime.UtcNow)
+                {
+                    _OutgoingPreviewEchoes.TryRemove(title, out _);
+                }
+                else
+                {
+                    var preview = _Client.Conversations
+                        .GetConversationItemFromName(item.Name)
+                        .ConversationContent?.Trim() ?? string.Empty;
+                    if (__OutgoingPreviewMatches(preview, outgoing.Message))
+                    {
+                        _ConversationSnapshot[title] = item.Name;
+                        _OutgoingPreviewEchoes.TryRemove(title, out _);
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        private static bool __OutgoingPreviewMatches(string preview, string message)
+        {
+            if (string.IsNullOrWhiteSpace(preview) || string.IsNullOrWhiteSpace(message))
+                return false;
+            if (string.Equals(preview, message, StringComparison.Ordinal))
+                return true;
+            if (preview.EndsWith($": {message}", StringComparison.Ordinal)
+                || preview.EndsWith($"：{message}", StringComparison.Ordinal))
+                return true;
+            if (!preview.EndsWith("…", StringComparison.Ordinal))
+                return false;
+            var prefix = preview[..^1].TrimEnd();
+            var separator = Math.Max(prefix.LastIndexOf(": ", StringComparison.Ordinal), prefix.LastIndexOf('：'));
+            if (separator >= 0)
+                prefix = prefix[(separator + (prefix[separator] == '：' ? 1 : 2))..];
+            return prefix.Length >= 12 && message.StartsWith(prefix, StringComparison.Ordinal);
         }
 
         private static void __SaveFetchedImage(SimpleMessageBubble message, Bitmap bitmap)
@@ -1882,7 +1938,9 @@ namespace WeChatAuto.Components
             if (options == null || !options.FetchVoiceChat)
                 return "语音";
 
-            var opened = __OpenVoiceToText(item, ratio, subWin, false);
+            var opened = __ClickInlineVoiceToText(item);
+            if (!opened)
+                opened = __OpenVoiceToText(item, ratio, subWin, false);
             if (!opened)
                 opened = __OpenVoiceToText(item, ratio, subWin, true);
             if (!opened)
@@ -1910,6 +1968,86 @@ namespace WeChatAuto.Components
                     return stableText;
             }
             return string.IsNullOrWhiteSpace(stableText) ? "语音" : stableText;
+        }
+
+        internal string TranscribeVisibleVoiceCore(AutomationElement item)
+        {
+            var operationId = Guid.NewGuid().ToString("N");
+            var stopwatch = Stopwatch.StartNew();
+            var original = item?.Name?.Trim() ?? string.Empty;
+            if (item == null || item.ClassName != "mmui::ChatVoiceItemView")
+                return original;
+            var existing = __ExtractVoiceTranscription(original);
+            if (!string.IsNullOrWhiteSpace(existing))
+                return existing;
+
+            VoiceTranscriptionOperationLog.Write(operationId, "started", stopwatch, details: new Dictionary<string, object>
+            {
+                ["voice_name"] = original,
+                ["bounds"] = __DescribeBounds(item)
+            });
+
+            var durationMatch = Regex.Match(original, @"^语音(?<seconds>\d+)[\""”″]?秒");
+            var duration = durationMatch.Success && int.TryParse(durationMatch.Groups["seconds"].Value, out var seconds)
+                ? seconds
+                : 0;
+            var ratio = DpiHelper.GetScaleForWindow(_Client.MainWindow.Properties.NativeWindowHandle);
+            var method = "inline_ocr";
+            var opened = __ClickInlineVoiceToText(item);
+            if (!opened)
+            {
+                method = "context_menu";
+                opened = __OpenVoiceToText(item, ratio, _Client.MainWindow, false)
+                    || __OpenVoiceToText(item, ratio, _Client.MainWindow, true);
+            }
+            if (!opened)
+            {
+                VoiceTranscriptionOperationLog.Write(operationId, "finished", stopwatch, false, new Dictionary<string, object>
+                {
+                    ["method"] = "none",
+                    ["result"] = original
+                });
+                return original;
+            }
+
+            VoiceTranscriptionOperationLog.Write(operationId, "transcription_clicked", stopwatch, true, new Dictionary<string, object>
+            {
+                ["method"] = method
+            });
+
+            var timeoutMilliseconds = Math.Min(12_000, Math.Max(4_000, (duration + 3) * 1_000));
+            var transcriptionStartMilliseconds = stopwatch.ElapsedMilliseconds;
+            var stableText = string.Empty;
+            var stableSince = 0L;
+            while (stopwatch.ElapsedMilliseconds - transcriptionStartMilliseconds < timeoutMilliseconds)
+            {
+                Thread.Sleep(100);
+                var text = __ExtractVoiceTranscription(item.Name);
+                if (string.IsNullOrWhiteSpace(text))
+                    continue;
+                if (!string.Equals(text, stableText, StringComparison.Ordinal))
+                {
+                    stableText = text;
+                    stableSince = stopwatch.ElapsedMilliseconds;
+                    continue;
+                }
+                if (stopwatch.ElapsedMilliseconds - stableSince >= 350)
+                {
+                    VoiceTranscriptionOperationLog.Write(operationId, "finished", stopwatch, true, new Dictionary<string, object>
+                    {
+                        ["method"] = method,
+                        ["text"] = stableText
+                    });
+                    return stableText;
+                }
+            }
+            var finalText = string.IsNullOrWhiteSpace(stableText) ? original : stableText;
+            VoiceTranscriptionOperationLog.Write(operationId, "finished", stopwatch, !string.IsNullOrWhiteSpace(stableText), new Dictionary<string, object>
+            {
+                ["method"] = method,
+                ["text"] = finalText
+            });
+            return finalText;
         }
 
         private void __FetchFile(
@@ -2152,7 +2290,8 @@ namespace WeChatAuto.Components
 
             const string path = "/Window[@ClassName='mmui::XMenu'][@Name='Weixin']";
             var popupMenuRetry = Retry.WhileNull(
-                () => subWin.FindFirstByXPath(path),
+                () => _Client.MainWindow.Automation.GetDesktop().FindFirstByXPath(path)
+                    ?? subWin.FindFirstByXPath(path),
                 TimeSpan.FromSeconds(1),
                 TimeSpan.FromMilliseconds(120));
             if (!popupMenuRetry.Success)
@@ -2171,6 +2310,59 @@ namespace WeChatAuto.Components
             return true;
         }
 
+        private bool __ClickInlineVoiceToText(AutomationElement item)
+        {
+            try
+            {
+                using var mat = _Client.OcrEngee.GetMatFromElement(item);
+                // Incoming voice bubbles and their inline action are on the
+                // left. Cropping the otherwise full-width chat row makes OCR
+                // substantially faster and avoids unrelated text to the right.
+                var cropWidth = Math.Min(mat.Width, Math.Max(320, mat.Height * 8));
+                using var region = new Mat(mat, new Rectangle(0, 0, cropWidth, mat.Height));
+                using var bitmap = region.ToBitmap();
+                var result = _Client.OcrEngee.Detect(
+                    bitmap,
+                    0,
+                    Math.Max(bitmap.Width, bitmap.Height),
+                    0.3f,
+                    0.3f,
+                    1.6f,
+                    false,
+                    false,
+                    isTest: false);
+                var block = result.TextBlocks.FirstOrDefault(value =>
+                {
+                    var text = Regex.Replace(value.Text ?? string.Empty, @"\s+", string.Empty);
+                    return text.Contains("转文字", StringComparison.Ordinal)
+                        || "转文字".Contains(text, StringComparison.Ordinal) && text.Length >= 2;
+                });
+                if (block == null || block.BoxPoints == null || block.BoxPoints.Count < 3)
+                    return false;
+
+                var bounds = item.BoundingRectangle;
+                var centerX = block.BoxPoints[0].X + (block.BoxPoints[2].X - block.BoxPoints[0].X) / 2.0;
+                var centerY = block.BoxPoints[0].Y + (block.BoxPoints[2].Y - block.BoxPoints[0].Y) / 2.0;
+                var scaleX = bounds.Width / Math.Max(1.0, bitmap.Width);
+                var scaleY = bounds.Height / Math.Max(1.0, bitmap.Height);
+                var point = new Point(
+                    bounds.X + (int)Math.Round(centerX * scaleX),
+                    bounds.Y + (int)Math.Round(centerY * scaleY));
+                if (!bounds.Contains(point))
+                    return false;
+
+                Mouse.Position = point;
+                Mouse.LeftClick();
+                Thread.Sleep(80);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                _Logger.Warn("OCR 定位语音转文字按钮失败。", exception);
+                return false;
+            }
+        }
+
         private static string __ExtractVoiceTranscription(string itemName)
         {
             if (string.IsNullOrWhiteSpace(itemName))
@@ -2182,7 +2374,15 @@ namespace WeChatAuto.Components
                 match.Groups["text"].Value,
                 @"\s+\d{4}年\d{1,2}月\d{1,2}日\s+\d{2}:\d{2}$",
                 string.Empty);
-            return text.Trim();
+            var ignored = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "未播放", "已播放", "转文字", "语音转文字", "正在转文字", "转换中"
+            };
+            var lines = Regex.Split(text, "[\\r\\n]+")
+                .Select(value => value.Trim())
+                .Where(value => !string.IsNullOrWhiteSpace(value) && !ignored.Contains(value))
+                .ToArray();
+            return string.Join("\n", lines).Trim();
         }
 
         private (int voiceDelay, DateTime date) __ParseVoiceContent(string text)

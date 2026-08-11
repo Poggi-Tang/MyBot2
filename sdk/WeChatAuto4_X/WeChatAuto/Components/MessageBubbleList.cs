@@ -169,6 +169,61 @@ namespace WeChatAuto.Components
             return await WeChatInvoker.Call(GetAllChatHistoryCore, start, end);
         }
 
+        /// <summary>
+        /// Reads the message bubbles currently rendered in a conversation without
+        /// opening the chat-history window. This is a lightweight recovery surface
+        /// for monitor callbacks that arrive late or are temporarily unavailable.
+        /// </summary>
+        public async Task<List<ChatSimpleMessage>> GetVisibleChatMessages(string who = "")
+        {
+            if (!string.IsNullOrWhiteSpace(who))
+            {
+                var currentTitle = await _Client.GetOnlyTitle();
+                if (!string.Equals(currentTitle, who, StringComparison.Ordinal))
+                {
+                    var found = await _Client.SearchFriend(who);
+                    if (!found)
+                        return new List<ChatSimpleMessage>();
+                    RandomWait.Wait(100, 300);
+                }
+            }
+            return await WeChatInvoker.Call(GetVisibleChatMessagesCore);
+        }
+
+        internal List<ChatSimpleMessage> GetVisibleChatMessagesCore(UIA3Automation automation)
+        {
+            var root = MessageRoot;
+            if (root == null)
+                return new List<ChatSimpleMessage>();
+            var rootBounds = root.BoundingRectangle;
+            var items = root
+                .FindAllChildren(cf => cf.ByControlType(ControlType.ListItem))
+                .Where(item =>
+                    item != null
+                    && !string.IsNullOrWhiteSpace(item.Name)
+                    && !item.BoundingRectangle.IsEmpty
+                    && item.BoundingRectangle.Bottom > rootBounds.Top
+                    && item.BoundingRectangle.Top < rootBounds.Bottom)
+                .OrderBy(item => item.BoundingRectangle.Top)
+                .ToList();
+            var result = new List<ChatSimpleMessage>();
+            foreach (var item in items)
+            {
+                var message = item.ClassName == "mmui::ChatVoiceItemView"
+                    ? _Client.MessageMonitor.TranscribeVisibleVoiceCore(item)
+                    : item.Name.Trim();
+                result.Add(new ChatSimpleMessage
+                {
+                    Who = item.ClassName == "mmui::ChatItemView" ? "系统" : "对方",
+                    Message = message,
+                    SendDateTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                    DateTime = DateTime.Now,
+                    UniqueString = item.Properties.RuntimeId.ToUniqueString(),
+                });
+            }
+            return result;
+        }
+
         internal List<ChatSimpleMessage> GetAllChatHistoryCore(UIA3Automation automation, DateTime starDate, DateTime endDate)
         {
             var invokeButton = HistoryButton;

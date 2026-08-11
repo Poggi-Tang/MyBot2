@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 
 from mybot_ui.chat_engine import ConversationMemory
 from mybot_ui.reply_policy import ReplyPolicy
@@ -8,13 +8,13 @@ class ReplyPolicyTests(unittest.TestCase):
     def test_defaults_distinguish_boundaries_style_and_refusal(self):
         policy = ReplyPolicy.from_mapping({})
         messages, matched = policy.system_messages(
-            chat_title="测试联系人甲",
-            sender="测试联系人甲",
+            chat_title="芝士圆子",
+            sender="芝士圆子",
             is_group=False,
         )
 
         self.assertIn("你的名字是“圆子”", messages[0])
-        self.assertIn("当前消息发送者的名称是“测试联系人甲”", messages[0])
+        self.assertIn("当前消息发送者的名称是“芝士圆子”", messages[0])
         self.assertIn("不要输出不在对话中的编号、哈希", messages[0])
         self.assertIn("回复边界优先级最高", messages[1])
         self.assertIn("对外只以圆子的身份说话", messages[1])
@@ -34,7 +34,7 @@ class ReplyPolicyTests(unittest.TestCase):
         })
         restored = ReplyPolicy.from_mapping(policy.to_mapping())
         messages, matched = restored.system_messages(
-            chat_title="测试联系人甲", sender="测试联系人甲", is_group=False
+            chat_title="芝士圆子", sender="芝士圆子", is_group=False
         )
 
         self.assertEqual("小圆", restored.ai_name)
@@ -46,21 +46,21 @@ class ReplyPolicyTests(unittest.TestCase):
     def test_contact_and_conversation_profiles_are_applied_after_common_rules(self):
         policy = ReplyPolicy.from_mapping({
             "contact_profiles": {
-                "测试联系人甲": {
+                "芝士圆子": {
                     "relationship": "熟悉的测试联系人",
                     "style": "更口语化",
                     "instructions": "称呼对方为圆子",
                 }
             },
             "conversation_profiles": {
-                "测试群聊": {
+                "MyBot测试群2": {
                     "style": "群里保持简短",
                 }
             },
         })
         messages, matched = policy.system_messages(
-            chat_title="测试群聊",
-            sender="测试联系人甲",
+            chat_title="MyBot测试群2",
+            sender="芝士圆子",
             is_group=True,
         )
 
@@ -68,7 +68,7 @@ class ReplyPolicyTests(unittest.TestCase):
         self.assertIn("熟悉的测试联系人", messages[5])
         self.assertIn("群里保持简短", messages[6])
         self.assertEqual(
-            ["identity:圆子", "global", "group", "contact:测试联系人甲", "conversation:测试群聊"],
+            ["identity:圆子", "global", "group", "contact:芝士圆子", "conversation:MyBot测试群2"],
             matched,
         )
 

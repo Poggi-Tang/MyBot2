@@ -1,4 +1,4 @@
-﻿import json
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,8 +24,8 @@ class StubClient:
 
 class PersonalMemoryTests(unittest.TestCase):
     def test_person_id_uses_contact_for_private_and_sender_for_group(self):
-        self.assertEqual("测试联系人甲", person_id("测试联系人甲", "对方", False))
-        self.assertEqual("测试联系人甲", person_id("测试群聊", "测试联系人甲", True))
+        self.assertEqual("芝士圆子", person_id("芝士圆子", "对方", False))
+        self.assertEqual("芝士圆子", person_id("MyBot测试群2", "芝士圆子", True))
 
     def test_person_id_normalizes_configured_ocr_alias(self):
         aliases = {"Rosa蓉薇": "Rosa蔷薇"}
@@ -63,24 +63,24 @@ class PersonalMemoryTests(unittest.TestCase):
                 communication_style="不喜欢太正式",
                 message_count=2,
             )
-            store.update("测试联系人甲", profile)
+            store.update("芝士圆子", profile)
 
-            loaded = PersonalMemoryStore(path).get("测试联系人甲")
+            loaded = PersonalMemoryStore(path).get("芝士圆子")
             self.assertEqual(profile, loaded)
-            self.assertIn("喜欢摄影", loaded.prompt("测试联系人甲"))
-            self.assertNotIn("message_count", loaded.prompt("测试联系人甲"))
+            self.assertIn("喜欢摄影", loaded.prompt("芝士圆子"))
+            self.assertNotIn("message_count", loaded.prompt("芝士圆子"))
 
     def test_store_lists_reloads_and_deletes_profiles(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "personal-memory.json"
             store = PersonalMemoryStore(path)
-            store.update("测试联系人甲", PersonalProfile(summary="喜欢摄影"))
+            store.update("芝士圆子", PersonalProfile(summary="喜欢摄影"))
             store.update("群友甲", PersonalProfile(preferences=("喜欢跑步",)))
 
-            self.assertEqual(["测试联系人甲", "群友甲"], store.names())
+            self.assertEqual(["群友甲", "芝士圆子"], store.names())
             self.assertTrue(store.delete("群友甲"))
             self.assertFalse(store.delete("不存在"))
-            self.assertEqual(["测试联系人甲"], store.names())
+            self.assertEqual(["芝士圆子"], store.names())
 
             path.write_text(json.dumps({
                 "外部更新": {"summary": "从磁盘重新加载"},
@@ -103,7 +103,7 @@ class PersonalMemoryTests(unittest.TestCase):
             facts=("在广州工作", "养了一只猫", "周末练习摄影", "常喝冰美式", "喜欢悬疑电影", "最近换了键盘"),
         )
 
-        prompt = profile.prompt("测试联系人甲", "相机镜头该怎么选")
+        prompt = profile.prompt("芝士圆子", "相机镜头该怎么选")
 
         self.assertIn("周末练习摄影", prompt)
         self.assertNotIn("在广州工作", prompt)
@@ -125,14 +125,14 @@ class PersonalMemoryTests(unittest.TestCase):
             learned = learner.learn(
                 primary=ModelConfig(model="test"),
                 backup=None,
-                name="测试联系人甲",
+                name="芝士圆子",
                 user_message="叫我芝士就好，我最近在学摄影。",
                 assistant_reply="好呀，芝士。",
             )
 
             self.assertEqual("芝士", learned.preferred_name)
             self.assertEqual(1, learned.message_count)
-            self.assertEqual(learned, store.get("测试联系人甲"))
+            self.assertEqual(learned, store.get("芝士圆子"))
             self.assertIn("existing_profile", client.messages[1]["content"])
 
 

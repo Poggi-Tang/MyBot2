@@ -263,6 +263,13 @@ public class MessageHandler : IDisposable
                     list = await client.GetChatHistory(who, fDate);
                     response.Data = JsonConvert.SerializeObject(list);
                     break;
+                case "GetVisibleChatMessages":
+                    payload = wrapper.Options!;
+                    dicPayload = JsonConvert.DeserializeObject<Dictionary<string, string>>(payload);
+                    who = dicPayload?.GetValueOrDefault("who") ?? string.Empty;
+                    list = await client.GetVisibleChatMessages(who);
+                    response.Data = JsonConvert.SerializeObject(list);
+                    break;
                 case "GetLatestOriginalImage":
                     payload = wrapper.Options!;
                     dicPayload = JsonConvert.DeserializeObject<Dictionary<string, string>>(payload);

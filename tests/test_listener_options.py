@@ -1,4 +1,4 @@
-﻿import json
+import json
 import unittest
 
 from mybot_ui.catalog import build_options
@@ -9,7 +9,7 @@ class ListenerOptionsTests(unittest.TestCase):
         payload = build_options(
             "AddMessageListener",
             {
-                "targets": ["测试联系人甲"],
+                "targets": ["芝士圆子"],
                 "open": False,
                 "monitor_read_conversations": True,
                 "file_save_directory": "F:/MyBot/data/attachments",
@@ -23,7 +23,7 @@ class ListenerOptionsTests(unittest.TestCase):
         self.assertEqual("F:/MyBot/data/attachments", options["file_save_directory"])
 
     def test_read_conversation_monitoring_is_off_by_default(self) -> None:
-        payload = build_options("AddMessageListener", {"targets": ["测试联系人甲"]})
+        payload = build_options("AddMessageListener", {"targets": ["芝士圆子"]})
 
         options = json.loads(payload["options"])
         self.assertFalse(options["monitor_read_conversations"])

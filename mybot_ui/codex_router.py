@@ -91,6 +91,15 @@ class CodexTaskRouter:
     def acknowledgement(content: str, *, is_group: bool = False) -> str:
         if _LIVE_QUERY_PATTERN.search(content):
             choices = ("稍等，我去看一下", "等我一下，我去查查")
+        elif re.search(
+            r"(?:改|修改|编辑|添加|追加|补充|删除|替换|润色|翻译).{0,24}(?:文件|文档|表格|PDF|Word|Excel|PPT)"
+            r"|(?:文件|文档|表格|PDF|Word|Excel|PPT).{0,24}(?:改|修改|编辑|添加|追加|补充|删除|替换|润色|翻译)",
+            content,
+            re.IGNORECASE,
+        ):
+            choices = ("行，我改一下", "好，我来改", "行，我给你弄好")
+        elif _FILE_CREATION_PATTERN.search(content):
+            choices = ("行，我写一下", "好，我整理成文件", "行，我来弄")
         elif re.search(r"日志|报错|bug|排查|调试|修复", content, re.IGNORECASE):
             choices = ("稍等，我先看一下", "我去看看，等我一会儿")
         elif re.search(r"代码|项目|脚本|程序|实现|开发|重构", content, re.IGNORECASE):

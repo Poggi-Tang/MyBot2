@@ -51,6 +51,12 @@ class CodexRouterTests(unittest.TestCase):
             self.assertTrue(any(word in reply for word in ("看", "查", "弄")))
             self.assertNotIn("有结果", reply)
 
+        document_edit = CodexTaskRouter.acknowledgement(
+            "你把这个文档改一下，在里面加一首打油诗"
+        )
+        self.assertTrue(any(word in document_edit for word in ("改", "加", "弄")))
+        self.assertNotIn("看一下", document_edit)
+
     def test_acknowledgements_vary_and_never_use_old_fixed_sentence(self):
         replies = {
             CodexTaskRouter.acknowledgement(f"帮我完成耗时任务 {index}")

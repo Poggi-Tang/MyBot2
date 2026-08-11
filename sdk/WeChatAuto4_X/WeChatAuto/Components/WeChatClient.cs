@@ -596,6 +596,9 @@ namespace WeChatAuto.Components
         /// <returns>返回<see cref="ChatSimpleMessage"/>列表</returns>
         public async Task<List<ChatSimpleMessage>> GetChatHistory(string who, DateTime date = default) => await ChatContent.GetChatHistory(who, date);
 
+        /// <summary>读取指定会话当前屏幕内可见的消息气泡，不打开聊天记录窗口。</summary>
+        public async Task<List<ChatSimpleMessage>> GetVisibleChatMessages(string who = "") => await ChatContent.GetVisibleChatMessages(who);
+
         /// <summary>
         /// 获取一段时间的(开始时间与结束时间)聊天历史记录
         /// 适用于历史消息比较多，分段获取的场景

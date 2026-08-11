@@ -19,8 +19,8 @@
       "validated_at": "2026-08-08T03:02:03+08:00",
       "validation": "compileall + unittest",
       "sha256": "eb013676c05f83092ab0de61a64ac265e810d20c49de7a2b1ef95077da62defc",
-      "usage_count": 0,
-      "last_used_at": ""
+      "usage_count": 2,
+      "last_used_at": "2026-08-10T17:25:20+08:00"
     }
   ]
 }

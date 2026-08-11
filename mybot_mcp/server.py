@@ -82,6 +82,58 @@ def _task_context() -> dict[str, Any]:
     return value
 
 
+def _scan_output_files(output_dir: Path) -> tuple[Path, ...]:
+    results: list[Path] = []
+    try:
+        candidates = output_dir.rglob("*")
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve(strict=True)
+                resolved.relative_to(output_dir)
+                size = resolved.stat().st_size
+            except (OSError, ValueError):
+                continue
+            if resolved.is_file() and 0 < size <= MAX_ATTACHMENT_BYTES:
+                results.append(resolved)
+                if len(results) >= 10:
+                    break
+    except OSError:
+        pass
+    return tuple(results)
+
+
+def _repair_utf8_path(value: str) -> str:
+    try:
+        repaired = value.encode("gbk").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return ""
+    return repaired if repaired != value else ""
+
+
+def _resolve_output_file(output_dir: Path, value: str) -> tuple[Path | None, str, int]:
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = output_dir / candidate
+    candidate.resolve(strict=False).relative_to(output_dir)
+    try:
+        return candidate.resolve(strict=True), "requested_path", 0
+    except FileNotFoundError:
+        repaired_value = _repair_utf8_path(value)
+        if repaired_value:
+            repaired = Path(repaired_value)
+            if not repaired.is_absolute():
+                repaired = output_dir / repaired
+            repaired.resolve(strict=False).relative_to(output_dir)
+            try:
+                return repaired.resolve(strict=True), "utf8_path_repair", 0
+            except FileNotFoundError:
+                pass
+        scanned = _scan_output_files(output_dir)
+        if len(scanned) == 1:
+            return scanned[0], "outputs_scan", 1
+        return None, "outputs_scan", len(scanned)
+
+
 def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name == "get_capabilities":
         abilities = ExtensionAbilityStore(PROJECT_ROOT / "extensions").list_abilities()
@@ -130,10 +182,15 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         value = str(arguments.get("path", "")).strip()
         if not value:
             raise ValueError("output path is empty")
-        candidate = Path(value)
-        if not candidate.is_absolute():
-            candidate = configured_output / candidate
-        resolved = candidate.resolve(strict=True)
+        resolved, resolution, scanned_count = _resolve_output_file(configured_output, value)
+        if resolved is None:
+            return _text_result({
+                "registered": False,
+                "task_id": task_id,
+                "delivery_fallback": "outputs_scan",
+                "output_file_count": scanned_count,
+                "retry": False,
+            })
         resolved.relative_to(configured_output)
         if not resolved.is_file():
             raise ValueError("output path is not a file")
@@ -159,6 +216,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             "name": resolved.name,
             "size": size,
             "description": str(arguments.get("description", "")).strip()[:300],
+            "resolution": resolution,
         })
         temporary = manifest_path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -168,6 +226,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             "task_id": task_id,
             "name": resolved.name,
             "size": size,
+            "resolution": resolution,
         })
     raise KeyError(f"unknown tool: {name}")
 
@@ -218,6 +277,10 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def main() -> None:
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="strict")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="strict")
     for line in sys.stdin:
         try:
             request = json.loads(line)

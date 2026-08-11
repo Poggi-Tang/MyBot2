@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 
 from mybot_ui.realtime_tools import (
     RealtimeToolExecutor,
@@ -25,7 +25,7 @@ class RealtimeToolTests(unittest.TestCase):
     def test_detects_short_forecast_followup_from_weather_context(self):
         followup = detect_realtime_request(
             "明天呢",
-            "测试联系人甲: 闵行今天天气怎么样\n圆子: 闵行现在 26℃，最高降雨概率约 93%",
+            "芝士圆子: 闵行今天天气怎么样\n圆子: 闵行现在 26℃，最高降雨概率约 93%",
         )
 
         self.assertIsNotNone(followup)

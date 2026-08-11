@@ -1,4 +1,4 @@
-﻿import json
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -30,11 +30,11 @@ class EpisodicMemoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "episodes.json"
             store = EpisodicMemoryStore(path)
-            self.assertTrue(store.add("测试联系人甲", "我最近在学摄影", "你拍什么题材比较多"))
+            self.assertTrue(store.add("芝士圆子", "我最近在学摄影", "你拍什么题材比较多"))
             self.assertTrue(store.add("群友甲", "我喜欢跑步", "最近跑了多远"))
 
             loaded = EpisodicMemoryStore(path)
-            prompt = loaded.prompt("测试联系人甲", "相机怎么选")
+            prompt = loaded.prompt("芝士圆子", "相机怎么选")
             self.assertIn("摄影", prompt)
             self.assertNotIn("跑步", prompt)
 
@@ -42,14 +42,14 @@ class EpisodicMemoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "episodes.json"
             store = EpisodicMemoryStore(path)
-            store.add("测试联系人甲", "第一条", "第一条回复")
-            store.add("测试联系人甲", "第二条", "第二条回复")
+            store.add("芝士圆子", "第一条", "第一条回复")
+            store.add("芝士圆子", "第二条", "第二条回复")
             store.add("群友甲", "群消息", "群回复")
 
-            self.assertEqual(["测试联系人甲", "群友甲"], store.names())
+            self.assertEqual(["群友甲", "芝士圆子"], store.names())
             self.assertEqual(3, store.count())
-            self.assertEqual(2, store.count("测试联系人甲"))
-            self.assertEqual("第二条", store.recent("测试联系人甲", limit=1)[0].user_message)
+            self.assertEqual(2, store.count("芝士圆子"))
+            self.assertEqual("第二条", store.recent("芝士圆子", limit=1)[0].user_message)
             self.assertTrue(store.delete_person("群友甲"))
             self.assertFalse(store.delete_person("不存在"))
             self.assertEqual(2, store.count())
@@ -69,7 +69,7 @@ class EpisodicMemoryTests(unittest.TestCase):
     def test_relevance_can_outrank_newer_unrelated_episode(self):
         now = datetime.now(timezone.utc)
         data = {
-            "测试联系人甲": [
+            "芝士圆子": [
                 Episode(
                     "我周末喜欢拍照，最近在看相机",
                     "可以先确定常拍的题材",
@@ -89,7 +89,7 @@ class EpisodicMemoryTests(unittest.TestCase):
             path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
             store = EpisodicMemoryStore(path)
 
-            result = store.retrieve("测试联系人甲", "想买相机拍照", limit=1)
+            result = store.retrieve("芝士圆子", "想买相机拍照", limit=1)
 
             self.assertIn("相机", result[0].user_message)
 
@@ -97,13 +97,13 @@ class EpisodicMemoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "episodes.json"
             store = EpisodicMemoryStore(path)
-            self.assertFalse(store.add("测试联系人甲", "我的密码是 abc123", "知道了"))
-            self.assertTrue(store.add("测试联系人甲", "我喜欢摄影", "记住啦"))
-            self.assertFalse(store.add("测试联系人甲", "我喜欢摄影", "记住啦"))
+            self.assertFalse(store.add("芝士圆子", "我的密码是 abc123", "知道了"))
+            self.assertTrue(store.add("芝士圆子", "我喜欢摄影", "记住啦"))
+            self.assertFalse(store.add("芝士圆子", "我喜欢摄影", "记住啦"))
 
             content = path.read_text(encoding="utf-8")
             self.assertNotIn("abc123", content)
-            self.assertEqual(1, len(json.loads(content)["测试联系人甲"]))
+            self.assertEqual(1, len(json.loads(content)["芝士圆子"]))
 
 
 if __name__ == "__main__":

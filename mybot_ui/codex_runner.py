@@ -33,6 +33,11 @@ class CodexRuntimeConfig:
     api_key: str
     model: str
     timeout_seconds: int = 900
+    mcp_tool_timeout_seconds: int = 5
+    thread_max_tasks: int = 2
+    thread_max_context_chars: int = 12_000
+    thread_max_age_seconds: int = 1_800
+    model_reasoning_effort: str = "low"
 
 
 @dataclass(frozen=True)
@@ -52,14 +57,80 @@ class CodexThreadStore:
 
     def get(self, conversation: str) -> str:
         with self._lock:
-            return str(self._read().get(conversation, "")).strip()
+            item = self._read().get(conversation, "")
+            if isinstance(item, dict):
+                return str(item.get("thread_id", "")).strip()
+            return str(item).strip()
 
-    def set(self, conversation: str, thread_id: str) -> None:
+    def select(
+        self,
+        conversation: str,
+        *,
+        incoming_context_chars: int,
+        max_tasks: int,
+        max_context_chars: int,
+        max_age_seconds: int,
+        now: float | None = None,
+    ) -> tuple[str, str]:
+        with self._lock:
+            item = self._read().get(conversation)
+        if item is None:
+            return "", "new_conversation"
+        if not isinstance(item, dict):
+            return "", "legacy_thread"
+        thread_id = str(item.get("thread_id", "")).strip()
+        if not thread_id:
+            return "", "invalid_thread"
+        try:
+            task_count = max(0, int(item.get("task_count", 0)))
+            context_chars = max(0, int(item.get("context_chars", 0)))
+            created_at = float(item.get("created_at", 0))
+        except (TypeError, ValueError):
+            return "", "invalid_metadata"
+        current_time = time.time() if now is None else now
+        if created_at <= 0 or current_time - created_at >= max_age_seconds:
+            return "", "age_limit"
+        if task_count >= max_tasks:
+            return "", "task_limit"
+        if context_chars + max(0, incoming_context_chars) > max_context_chars:
+            return "", "context_limit"
+        return thread_id, "resume"
+
+    def set(
+        self,
+        conversation: str,
+        thread_id: str,
+        *,
+        context_chars: int = 0,
+        resumed: bool = False,
+        now: float | None = None,
+    ) -> None:
         if not conversation.strip() or not thread_id.strip():
             return
         with self._lock:
             data = self._read()
-            data[conversation] = thread_id
+            current_time = time.time() if now is None else now
+            previous = data.get(conversation)
+            if resumed and isinstance(previous, dict) and str(previous.get("thread_id", "")).strip() == thread_id:
+                try:
+                    task_count = max(0, int(previous.get("task_count", 0))) + 1
+                    total_context_chars = max(0, int(previous.get("context_chars", 0))) + max(0, context_chars)
+                    created_at = float(previous.get("created_at", current_time))
+                except (TypeError, ValueError):
+                    task_count = 1
+                    total_context_chars = max(0, context_chars)
+                    created_at = current_time
+            else:
+                task_count = 1
+                total_context_chars = max(0, context_chars)
+                created_at = current_time
+            data[conversation] = {
+                "thread_id": thread_id,
+                "created_at": created_at,
+                "updated_at": current_time,
+                "task_count": task_count,
+                "context_chars": total_context_chars,
+            }
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".json.tmp")
             temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -74,12 +145,12 @@ class CodexThreadStore:
             temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             os.replace(temporary, self.path)
 
-    def _read(self) -> dict[str, str]:
+    def _read(self) -> dict[str, Any]:
         try:
             value = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
-        return {str(key): str(item) for key, item in value.items()} if isinstance(value, dict) else {}
+        return {str(key): item for key, item in value.items()} if isinstance(value, dict) else {}
 
 
 class CodexCliRunner:
@@ -128,8 +199,15 @@ class CodexCliRunner:
         staged_inputs = stage_task_inputs(task_root, attachments)
         matches = self.ability_store.matching(request)
         ability_context = "\n\n".join(value.prompt() for value in matches)
-        previous_thread = self.thread_store.get(conversation)
         attachment_context = self._attachment_prompt(staged_inputs, output_dir)
+        incoming_context_chars = sum(map(len, (request, context, ability_context, attachment_context)))
+        previous_thread, thread_decision = self.thread_store.select(
+            conversation,
+            incoming_context_chars=incoming_context_chars,
+            max_tasks=self.config.thread_max_tasks,
+            max_context_chars=self.config.thread_max_context_chars,
+            max_age_seconds=self.config.thread_max_age_seconds,
+        )
         prompt = (
             self._resume_prompt(request, context, ability_context, attachment_context)
             if previous_thread
@@ -139,6 +217,8 @@ class CodexCliRunner:
             "conversation": conversation,
             "request_length": len(request),
             "resumed": bool(previous_thread),
+            "thread_decision": thread_decision,
+            "incoming_context_chars": incoming_context_chars,
             "matched_abilities": [value.ability_id for value in matches],
             "input_file_count": len(staged_inputs),
         })
@@ -169,8 +249,11 @@ class CodexCliRunner:
             )
             if completed.returncode and previous_thread and self._resume_missing(completed):
                 self.thread_store.clear(conversation)
+                previous_thread = ""
+                thread_decision = "missing_thread"
+                prompt = self._initial_prompt(request, context, ability_context, attachment_context)
                 completed, text, thread_id = self._execute(
-                    self._initial_prompt(request, context, ability_context, attachment_context),
+                    prompt,
                     workspace=self.config.project_root,
                     previous_thread="",
                     ephemeral=False,
@@ -182,8 +265,18 @@ class CodexCliRunner:
                 raise CodexCliError("Codex CLI 没有返回可发送的结果。")
             active_thread = thread_id or previous_thread
             if active_thread:
-                self.thread_store.set(conversation, active_thread)
+                self.thread_store.set(
+                    conversation,
+                    active_thread,
+                    context_chars=len(prompt),
+                    resumed=bool(previous_thread),
+                )
             output_files = self._task_output_files(task_root)
+            operations.event("codex", "codex_output_scan", {
+                "task_id": task_id,
+                "output_file_count": len(output_files),
+                "delivery_source": "manifest_and_outputs_scan",
+            })
             result = CodexResult(
                 text=text[:4_000],
                 thread_id=active_thread,
@@ -208,6 +301,7 @@ class CodexCliRunner:
                     })
             operations.finish(span, success=True, result={
                 "thread_id": active_thread,
+                "thread_decision": thread_decision,
                 "reply_length": len(result.text),
                 "matched_abilities": list(result.matched_abilities),
                 "output_file_count": len(result.output_files),
@@ -397,6 +491,7 @@ class CodexCliRunner:
             "-c", "model_providers.mybot.requires_openai_auth=false",
             "-c", "model_providers.mybot.supports_websockets=false",
             "-c", "disable_response_storage=true",
+            "-c", f'model_reasoning_effort="{self.config.model_reasoning_effort}"',
             "-c", 'approval_policy="never"',
             "-c", 'windows.sandbox="elevated"',
             "-c", 'default_permissions="mybot_workspace"',
@@ -406,10 +501,11 @@ class CodexCliRunner:
             "-c", f'mcp_servers.mybot.command="{Path(sys.executable).as_posix()}"',
             "-c", 'mcp_servers.mybot.args=["-m","mybot_mcp.server"]',
             "-c", "mcp_servers.mybot.startup_timeout_sec=20",
+            "-c", f"mcp_servers.mybot.tool_timeout_sec={self.config.mcp_tool_timeout_seconds}",
             "-c", "mcp_servers.mybot.enabled=true",
             "-c", 'mcp_servers.mybot.default_tools_approval_mode="approve"',
-            "-c", 'mcp_servers.mybot.enabled_tools=["get_capabilities","get_task_context","report_progress","register_output_file"]',
-            "-c", 'mcp_servers.mybot.env_vars=["MYBOT_TASK_CONTEXT","MYBOT_TASK_TOKEN","PYTHONPATH"]',
+            "-c", 'mcp_servers.mybot.enabled_tools=["report_progress","register_output_file"]',
+            "-c", 'mcp_servers.mybot.env_vars=["MYBOT_TASK_CONTEXT","MYBOT_TASK_TOKEN","PYTHONPATH","PYTHONUTF8","PYTHONIOENCODING"]',
             "--enable", "code_mode_host",
         ]
         if previous_thread:
@@ -445,8 +541,9 @@ class CodexCliRunner:
     def _initial_prompt(self, request: str, context: str, abilities: str, attachments: str = "") -> str:
         return "\n\n".join((
             "你是 MyBot 异步调度的 Codex CLI。实际完成任务并验证结果，不要只给建议。",
-            "先读取 codex/skills/mybot-wechat/SKILL.md。若匹配到快捷能力，再读取其 SKILL.md、配方和脚本；只修改当前项目内完成任务所需的文件；保留已有改动，不提交或推送 Git。",
-            "需要交付文件时，只能写入任务指定的 output_dir，并在完成前调用 mybot.register_output_file 登记每个成果文件。不要把输入原件当作成果回传。",
+            "任务上下文、附件和匹配能力已经完整注入，不要重复读取通用 MyBot Skill，也不要调用 get_task_context 或 get_capabilities。若明确匹配到快捷能力，只读取该能力自己的 SKILL.md、配方和脚本。只修改完成任务所需的文件；保留已有改动，不提交或推送 Git。",
+            "如果任务需要用户刚发的附件，但【任务附件】显示没有输入文件，必须明确说明没有拿到本次原文件并停止。严禁搜索或复用 data/codex/tasks、旧 outputs、其他会话或历史任务中的文件来代替本次附件。",
+            "需要交付文件时，只能写入任务指定的 output_dir；调用 mybot.register_output_file 时只传相对于 output_dir 的准确文件名。登记失败或超时不要重试、不要等待，MyBot 会直接扫描 outputs 目录交付。不要把输入原件当作成果回传。",
             "最终回复必须适合微信发送，说明结果和验证，最多 1600 个中文字符，不输出内部推理或冗长日志。",
             "【最近对话】\n" + (context.strip()[-6_000:] or "[无]"),
             "【匹配的快捷能力】\n" + (abilities or "[无，按常规流程执行]"),
@@ -457,12 +554,13 @@ class CodexCliRunner:
     @staticmethod
     def _resume_prompt(request: str, context: str, abilities: str, attachments: str = "") -> str:
         return "\n\n".join((
-            "继续处理同一微信会话的新任务，不重复已完成工作。若匹配到快捷能力，先读取对应 SKILL.md、配方和脚本，再优先复用。",
+            "继续处理同一微信会话的新任务，不重复已完成工作。任务上下文和匹配能力已经注入，不要调用 get_task_context 或 get_capabilities；若匹配到快捷能力，只读取对应能力的 SKILL.md、配方和脚本。",
+            "如果任务需要用户刚发的附件，但【任务附件】显示没有输入文件，必须明确说明没有拿到本次原文件并停止。严禁搜索或复用 data/codex/tasks、旧 outputs、其他会话或历史任务中的文件来代替本次附件。",
             "【最近对话增量】\n" + (context.strip()[-3_000:] or "[无]"),
             "【匹配的快捷能力】\n" + (abilities or "[无]"),
             "【任务附件】\n" + (attachments or "[无]"),
             "【本次任务】\n" + request,
-            "需要交付文件时，只能写入本次任务的 output_dir，并调用 mybot.register_output_file 登记。",
+            "需要交付文件时，只能写入本次任务的 output_dir；调用 mybot.register_output_file 时只传相对文件名。登记失败或超时不要重试、不要等待，MyBot 会扫描 outputs 目录交付。",
             "完成并验证后，用不超过 1600 个中文字符给出可直接发送的结果。",
         ))
 
@@ -621,6 +719,8 @@ class CodexCliRunner:
         environment["PYTHONPATH"] = str(self.config.project_root) + (
             os.pathsep + existing_pythonpath if existing_pythonpath else ""
         )
+        environment["PYTHONUTF8"] = "1"
+        environment["PYTHONIOENCODING"] = "utf-8"
         if context_path is not None:
             environment["MYBOT_TASK_CONTEXT"] = str(context_path)
             environment["MYBOT_TASK_TOKEN"] = task_token

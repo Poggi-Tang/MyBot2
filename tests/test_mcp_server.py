@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -130,6 +132,126 @@ class McpServerTests(unittest.TestCase):
             self.assertIn("error", rejected)
             manifest = json.loads((task_root / "outputs.json").read_text(encoding="utf-8"))
             self.assertEqual("result.txt", manifest[0]["name"])
+        finally:
+            context_path.unlink(missing_ok=True)
+            output.unlink(missing_ok=True)
+            (task_root / "outputs.json").unlink(missing_ok=True)
+            output_dir.rmdir()
+            task_root.rmdir()
+
+    def test_register_output_file_repairs_chinese_path_and_scans_on_missing_name(self):
+        from mybot_mcp import server
+
+        task_id = "test-output-chinese-registration"
+        task_root = server.PROJECT_ROOT / "data" / "codex" / "tasks" / task_id
+        output_dir = task_root / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output = output_dir / "test_已添加打油诗.txt"
+        output.write_text("完成", encoding="utf-8")
+        control_root = server.PROJECT_ROOT / "data" / "codex" / "tmp"
+        control_root.mkdir(parents=True, exist_ok=True)
+        context_path = control_root / f"task-{task_id}.json"
+        token = "test-token"
+        context_path.write_text(json.dumps({
+            "task_id": task_id,
+            "conversation": "测试会话",
+            "output_dir": str(output_dir.resolve()),
+            "task_token": token,
+        }, ensure_ascii=False), encoding="utf-8")
+        environment = {
+            "MYBOT_TASK_CONTEXT": str(context_path),
+            "MYBOT_TASK_TOKEN": token,
+        }
+        try:
+            with patch.dict(os.environ, environment, clear=False):
+                repaired = handle_request({
+                    "jsonrpc": "2.0",
+                    "id": 9,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "register_output_file",
+                        "arguments": {"path": "test_宸叉坊鍔犳墦娌硅瘲.txt"},
+                    },
+                })
+                scanned = handle_request({
+                    "jsonrpc": "2.0",
+                    "id": 10,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "register_output_file",
+                        "arguments": {"path": "missing.txt"},
+                    },
+                })
+            self.assertNotIn("error", repaired)
+            self.assertNotIn("error", scanned)
+            repaired_result = json.loads(repaired["result"]["content"][0]["text"])
+            scanned_result = json.loads(scanned["result"]["content"][0]["text"])
+            self.assertEqual("utf8_path_repair", repaired_result["resolution"])
+            self.assertEqual("outputs_scan", scanned_result["resolution"])
+            manifest = json.loads((task_root / "outputs.json").read_text(encoding="utf-8"))
+            self.assertEqual("test_已添加打油诗.txt", manifest[0]["name"])
+        finally:
+            context_path.unlink(missing_ok=True)
+            output.unlink(missing_ok=True)
+            (task_root / "outputs.json").unlink(missing_ok=True)
+            output_dir.rmdir()
+            task_root.rmdir()
+
+    def test_mcp_stdio_preserves_utf8_output_filename(self):
+        from mybot_mcp import server
+
+        task_id = "test-output-utf8-stdio"
+        task_root = server.PROJECT_ROOT / "data" / "codex" / "tasks" / task_id
+        output_dir = task_root / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output = output_dir / "中文路径验证.txt"
+        output.write_text("登记成功", encoding="utf-8")
+        control_root = server.PROJECT_ROOT / "data" / "codex" / "tmp"
+        control_root.mkdir(parents=True, exist_ok=True)
+        context_path = control_root / f"task-{task_id}.json"
+        token = "test-token"
+        context_path.write_text(json.dumps({
+            "task_id": task_id,
+            "conversation": "测试会话",
+            "output_dir": str(output_dir.resolve()),
+            "task_token": token,
+        }, ensure_ascii=False), encoding="utf-8")
+        request = {
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {
+                "name": "register_output_file",
+                "arguments": {"path": output.name},
+            },
+        }
+        environment = os.environ.copy()
+        environment.update({
+            "MYBOT_TASK_CONTEXT": str(context_path),
+            "MYBOT_TASK_TOKEN": token,
+            "PYTHONPATH": str(server.PROJECT_ROOT),
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
+        })
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-m", "mybot_mcp.server"],
+                input=json.dumps(request, ensure_ascii=False) + "\n",
+                text=True,
+                encoding="utf-8",
+                errors="strict",
+                capture_output=True,
+                timeout=5,
+                cwd=server.PROJECT_ROOT,
+                env=environment,
+                check=False,
+            )
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            response = json.loads(completed.stdout.strip())
+            self.assertNotIn("error", response)
+            result = json.loads(response["result"]["content"][0]["text"])
+            self.assertEqual("中文路径验证.txt", result["name"])
+            self.assertEqual("requested_path", result["resolution"])
         finally:
             context_path.unlink(missing_ok=True)
             output.unlink(missing_ok=True)

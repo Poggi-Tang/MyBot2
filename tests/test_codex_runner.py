@@ -17,6 +17,50 @@ class CodexRunnerTests(unittest.TestCase):
             store.clear("测试会话")
             self.assertEqual("", store.get("测试会话"))
 
+    def test_thread_store_rotates_by_task_context_and_legacy_format(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "threads.json"
+            store = CodexThreadStore(path)
+            store.set("任务限制", "thread-1", context_chars=2_000, now=100)
+            store.set("任务限制", "thread-1", context_chars=2_000, resumed=True, now=101)
+            self.assertEqual(
+                ("", "task_limit"),
+                store.select(
+                    "任务限制",
+                    incoming_context_chars=100,
+                    max_tasks=2,
+                    max_context_chars=12_000,
+                    max_age_seconds=1_800,
+                    now=102,
+                ),
+            )
+
+            store.set("上下文限制", "thread-2", context_chars=11_500, now=100)
+            self.assertEqual(
+                ("", "context_limit"),
+                store.select(
+                    "上下文限制",
+                    incoming_context_chars=501,
+                    max_tasks=2,
+                    max_context_chars=12_000,
+                    max_age_seconds=1_800,
+                    now=102,
+                ),
+            )
+
+            path.write_text(json.dumps({"旧会话": "legacy-thread"}), encoding="utf-8")
+            self.assertEqual(
+                ("", "legacy_thread"),
+                store.select(
+                    "旧会话",
+                    incoming_context_chars=100,
+                    max_tasks=2,
+                    max_context_chars=12_000,
+                    max_age_seconds=1_800,
+                    now=102,
+                ),
+            )
+
     def test_commands_use_persistent_initial_and_resume_modes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -42,7 +86,15 @@ class CodexRunnerTests(unittest.TestCase):
             self.assertEqual(str(root / "task.json"), environment["MYBOT_TASK_CONTEXT"])
             self.assertEqual("token", environment["MYBOT_TASK_TOKEN"])
             self.assertIn(str(root), environment["PYTHONPATH"])
+            self.assertEqual("1", environment["PYTHONUTF8"])
+            self.assertEqual("utf-8", environment["PYTHONIOENCODING"])
             self.assertTrue(any("register_output_file" in value for value in initial))
+            self.assertIn("mcp_servers.mybot.tool_timeout_sec=5", initial)
+            self.assertIn('model_reasoning_effort="low"', initial)
+            enabled_tools = next(value for value in initial if "enabled_tools=" in value)
+            self.assertNotIn("get_task_context", enabled_tools)
+            self.assertNotIn("get_capabilities", enabled_tools)
+            self.assertTrue(any("PYTHONUTF8" in value for value in initial))
 
     def test_task_outputs_are_limited_to_output_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -60,6 +112,15 @@ class CodexRunnerTests(unittest.TestCase):
             ]), encoding="utf-8")
             self.assertEqual((str(valid.resolve()),), CodexCliRunner._task_output_files(task_root))
 
+    def test_task_outputs_scan_finds_chinese_file_without_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task_root = Path(directory) / "task"
+            output_dir = task_root / "outputs"
+            output_dir.mkdir(parents=True)
+            output = output_dir / "已添加打油诗.txt"
+            output.write_text("完成", encoding="utf-8")
+            self.assertEqual((str(output.resolve()),), CodexCliRunner._task_output_files(task_root))
+
     def test_thread_id_is_read_from_json_events(self):
         stdout = '\n'.join((json.dumps({"type": "turn.started"}), json.dumps({"type": "thread.started", "thread_id": "t-1"})))
         self.assertEqual("t-1", CodexCliRunner._thread_id(stdout))
@@ -72,6 +133,20 @@ class CodexRunnerTests(unittest.TestCase):
         ))
         error = subprocess.TimeoutExpired(["codex"], 30, output=stdout)
         self.assertEqual("MCP mybot.get_capabilities", CodexCliRunner._timeout_stage(error))
+
+    def test_prompts_forbid_substituting_historical_task_files(self):
+        attachment_context = "成果输出目录：C:/task/outputs\n输入文件：[无]"
+        initial = CodexCliRunner._initial_prompt(
+            object(), "修改刚发的文档", "", "", attachment_context
+        )
+        resumed = CodexCliRunner._resume_prompt(
+            "修改刚发的文档", "", "", attachment_context
+        )
+
+        for prompt in (initial, resumed):
+            self.assertIn("没有拿到本次原文件", prompt)
+            self.assertIn("data/codex/tasks", prompt)
+            self.assertIn("其他会话或历史任务", prompt)
 
 
 if __name__ == "__main__":

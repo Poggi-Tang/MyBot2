@@ -227,6 +227,9 @@ namespace WeChatAuto.Components
 
         internal bool SearchWhoCore(UIA3Automation automation, string who)
         {
+            var current = _Client.ChatContent.ChatHeader.GetTitleCore(automation);
+            if (current != null && string.Equals(current.Title, who, StringComparison.Ordinal))
+                return true;
             WinApi.ActivateWindow((IntPtr)_Client.MainWindow.Properties.NativeWindowHandle.Value);
             Thread.Sleep(120);
 

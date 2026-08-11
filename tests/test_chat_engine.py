@@ -89,6 +89,20 @@ class ChatEngineTests(unittest.TestCase):
         self.assertEqual(1, len(messages))
         self.assertEqual("第二句", messages[0].content)
 
+    def test_parse_listener_event_keeps_multiple_messages_in_latest_burst(self):
+        payload = {
+            "chat_title": "芝士圆子",
+            "new_message": [
+                {"who": "芝士圆子", "message": "问题一", "send_date": "2026-08-10T18:20:00"},
+                {"who": "芝士圆子", "message": "问题二", "send_date": "2026-08-10T18:20:00"},
+                {"who": "芝士圆子", "message": "问题三", "send_date": "2026-08-10T18:20:05"},
+            ],
+        }
+
+        messages = parse_listener_event(payload, now=datetime(2026, 8, 10, 18, 20, 6))
+
+        self.assertEqual(["问题一", "问题二", "问题三"], [item.content for item in messages])
+
     def test_parse_listener_event_rejects_unparseable_or_stale_dates(self):
         payload = {
             "chat_title": "AI",
@@ -98,6 +112,22 @@ class ChatEngineTests(unittest.TestCase):
             ],
         }
         self.assertEqual([], parse_listener_event(payload, now=datetime(2026, 8, 7, 9, 30)))
+
+    def test_parse_listener_event_keeps_fresh_message_when_sdk_omits_sender(self):
+        payload = {
+            "chat_title": "MyBot测试群2",
+            "new_message": [{
+                "who": "",
+                "message": "你把这个文档改一下，在里面加一首打油诗",
+                "send_date": "2026-08-10T17:53:00",
+                "message_type": 0,
+            }],
+        }
+
+        message = parse_listener_event(payload, now=datetime(2026, 8, 10, 17, 53, 5))[0]
+
+        self.assertEqual("对方", message.who)
+        self.assertIn("打油诗", message.content)
 
     def test_parse_conversation_preview_extracts_group_sender(self):
         message = parse_conversation_preview(
@@ -240,6 +270,24 @@ class ChatEngineTests(unittest.TestCase):
         self.assertEqual("报告.docx", message.attachments[0].name)
         self.assertEqual("C:/wechat/报告.docx", message.attachments[0].path)
         self.assertEqual("file", message.attachments[0].kind)
+
+    def test_listener_event_accepts_file_callback_with_minimum_timestamp(self):
+        payload = {
+            "chat_title": "文件测试",
+            "new_message": [{
+                "who": "测试联系人",
+                "message": "文件\n报告.docx\n18 KB\n微信电脑版",
+                "send_date": "0001-01-01T00:00:00",
+                "message_type": 4,
+                "file_name": "报告.docx",
+                "file_path": "C:/wechat/报告.docx",
+            }],
+        }
+
+        message = parse_listener_event(payload, now=datetime(2026, 8, 10, 18, 5))[0]
+
+        self.assertEqual("2026-08-10T18:05:00", message.send_date)
+        self.assertEqual("报告.docx", message.attachments[0].name)
 
     def test_listener_event_reads_sdk_image_file_when_base64_is_absent(self):
         with tempfile.TemporaryDirectory() as directory:

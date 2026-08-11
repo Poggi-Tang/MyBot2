@@ -1,4 +1,4 @@
-﻿import os
+import os
 import subprocess
 import sys
 import tempfile
@@ -13,7 +13,7 @@ class ApplicationRestartTests(unittest.TestCase):
     def test_helper_waits_for_current_process_then_runs_canonical_entrypoint(self):
         args = MainWindow._restart_application_helper(
             4321,
-            Path(r"C:\workspace\MyBot2"),
+            Path(r"C:\Projects\MyBot2"),
         )
 
         self.assertEqual("powershell.exe", args[0])
@@ -23,7 +23,7 @@ class ApplicationRestartTests(unittest.TestCase):
         self.assertIn("run.cmd", command)
         self.assertIn("restart-helper.log", command)
         self.assertIn("restart failed", command)
-        self.assertIn(r"C:\workspace\MyBot2", command)
+        self.assertIn(r"C:\Projects\MyBot2", command)
 
     @unittest.skipUnless(os.name == "nt", "Windows restart helper")
     def test_helper_survives_the_parent_process_and_launches_run_cmd(self):

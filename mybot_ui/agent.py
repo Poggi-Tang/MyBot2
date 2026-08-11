@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -59,7 +59,7 @@ class DialogueAgent:
             else:
                 unknown.append(part)
         if not calls:
-            return AgentPlan(reply="我还无法确定要调用哪个功能。可以说“列出群聊”“给 测试群聊 发消息：你好”或直接输入“执行 SendMessage {...}”。")
+            return AgentPlan(reply="我还无法确定要调用哪个功能。可以说“列出群聊”“给 MyBot测试群2 发消息：你好”或直接输入“执行 SendMessage {...}”。")
         plan = self._finish(calls)
         if unknown:
             plan.reply += f"\n未识别片段：{'；'.join(unknown)}"

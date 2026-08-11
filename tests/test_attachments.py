@@ -1,4 +1,4 @@
-﻿import base64
+import base64
 import os
 import tempfile
 import unittest
@@ -66,7 +66,7 @@ class AttachmentTests(unittest.TestCase):
                 WeChatAttachmentResolver([source.parent]),
             )
             remembered = store.remember(
-                "测试联系人甲",
+                "芝士圆子",
                 (IncomingAttachment("资料.zip", str(source)),),
                 received_at=datetime.now().isoformat(),
             )
@@ -79,7 +79,7 @@ class AttachmentTests(unittest.TestCase):
             self.assertTrue((store_root / "index.json").is_file())
 
             reloaded = ConversationAttachmentStore(store_root)
-            self.assertEqual(imported, Path(reloaded.all("测试联系人甲")[0].path))
+            self.assertEqual(imported, Path(reloaded.all("芝士圆子")[0].path))
 
     def test_file_request_discovers_nearby_wechat_file_and_excludes_old_image(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -94,10 +94,10 @@ class AttachmentTests(unittest.TestCase):
                 WeChatAttachmentResolver([source.parent]),
             )
             encoded = base64.b64encode(b"\x89PNG\r\n\x1a\nold-image").decode("ascii")
-            store.remember("测试联系人甲", (), image_base64=encoded)
+            store.remember("芝士圆子", (), image_base64=encoded)
 
             attachments = store.for_request(
-                "测试联系人甲",
+                "芝士圆子",
                 "你把壁纸解压后发给我",
                 received_at=received.isoformat(),
             )
@@ -109,10 +109,10 @@ class AttachmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             store = ConversationAttachmentStore(Path(directory) / "attachments")
             encoded = base64.b64encode(b"\x89PNG\r\n\x1a\nrestaurant").decode("ascii")
-            remembered = store.remember("测试联系人甲", (), image_base64=encoded)
+            remembered = store.remember("芝士圆子", (), image_base64=encoded)
 
             attachments = store.for_request(
-                "测试联系人甲",
+                "芝士圆子",
                 "把必胜客修改成肯德基发给我",
                 received_at=datetime.now().isoformat(),
             )
@@ -126,7 +126,7 @@ class AttachmentTests(unittest.TestCase):
             self.assertEqual(
                 remembered,
                 store.for_request(
-                    "测试联系人甲",
+                    "芝士圆子",
                     typo_request,
                     received_at=datetime.now().isoformat(),
                 ),

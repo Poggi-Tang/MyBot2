@@ -1,6 +1,8 @@
 param(
     [switch]$SkipSdkBuild,
-    [switch]$Live
+    [switch]$LiveSdk,
+    [switch]$Live,
+    [string]$TestAccount = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +18,14 @@ if (-not $SkipSdkBuild) {
     & (Join-Path $sdkRoot "scripts\build.ps1")
     if ($LASTEXITCODE -ne 0) { throw "SDK build failed (exit code $LASTEXITCODE)." }
 }
+if ($LiveSdk) {
+    if ([string]::IsNullOrWhiteSpace($TestAccount)) {
+        throw "-LiveSdk requires -TestAccount with an explicitly approved test account."
+    }
+    & (Join-Path $sdkRoot "scripts\test.ps1") -LiveWeChat -TestAccount $TestAccount
+    if ($LASTEXITCODE -ne 0) { throw "SDK live tests failed (exit code $LASTEXITCODE)." }
+}
+
 Push-Location $appRoot
 try {
     & $python -m pytest -q

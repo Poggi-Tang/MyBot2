@@ -1,4 +1,4 @@
-﻿import json
+import json
 import unittest
 from collections import deque
 from datetime import datetime, timedelta
@@ -13,26 +13,26 @@ from mybot_ui.chat_engine import IncomingMessage
 class MessageReferenceTests(unittest.TestCase):
     def test_send_message_serializes_sdk_chat_reference(self):
         reference = build_message_reference(
-            "测试联系人甲",
+            "芝士圆子",
             "你看这个问题",
             "2026-08-09T14:05:00",
         )
 
         options = build_options(
             "SendMessage",
-            {"who": "测试联系人甲", "message": "我看到了", "refer": reference},
+            {"who": "芝士圆子", "message": "我看到了", "refer": reference},
         )
 
         payload = json.loads(options["refer"])
         self.assertEqual("2026-08-09", payload["date"])
-        self.assertEqual("测试联系人甲", payload["message"]["who"])
+        self.assertEqual("芝士圆子", payload["message"]["who"])
         self.assertEqual("你看这个问题", payload["message"]["message"])
         self.assertEqual("2026年8月9日 14:05", payload["message"]["send_date_time"])
 
     def test_smart_reference_quotes_groups_and_parallel_private_messages(self):
         incoming = IncomingMessage(
             "人工智能自动化技术讨论群",
-            "测试联系人甲",
+            "芝士圆子",
             "这个怎么处理",
             datetime.now().isoformat(timespec="seconds"),
         )
@@ -47,8 +47,8 @@ class MessageReferenceTests(unittest.TestCase):
         self.assertEqual("group_context", reason)
 
         private = IncomingMessage(
-            "测试联系人甲",
-            "测试联系人甲",
+            "芝士圆子",
+            "芝士圆子",
             "第二个问题",
             datetime.now().isoformat(timespec="seconds"),
         )
@@ -64,8 +64,8 @@ class MessageReferenceTests(unittest.TestCase):
 
     def test_smart_reference_skips_immediate_private_reply_but_quotes_delayed_reply(self):
         current = IncomingMessage(
-            "测试联系人甲",
-            "测试联系人甲",
+            "芝士圆子",
+            "芝士圆子",
             "在吗",
             datetime.now().isoformat(timespec="seconds"),
         )
@@ -106,14 +106,14 @@ class MessageReferenceTests(unittest.TestCase):
 
     def test_explicit_image_quote_targets_latest_incoming_image(self):
         image = IncomingMessage(
-            "测试联系人甲",
+            "芝士圆子",
             "对方",
             "[图片]",
             "2026-08-09T18:27:24",
             image_base64="aW1hZ2U=",
         )
         request = IncomingMessage(
-            "测试联系人甲",
+            "芝士圆子",
             "对方",
             "引用我发的图片回复",
             "2026-08-09T18:28:00",
@@ -134,10 +134,10 @@ class MessageReferenceTests(unittest.TestCase):
 
 class SameConversationConcurrencyTests(unittest.TestCase):
     def test_two_messages_from_same_conversation_start_without_waiting(self):
-        title = "测试联系人甲"
+        title = "芝士圆子"
         messages = deque([
-            IncomingMessage(title, "测试联系人甲", "上海今天天气怎么样", "2026-08-09T12:00:00"),
-            IncomingMessage(title, "测试联系人甲", "北京今天天气怎么样", "2026-08-09T12:00:01"),
+            IncomingMessage(title, "芝士圆子", "上海今天天气怎么样", "2026-08-09T12:00:00"),
+            IncomingMessage(title, "芝士圆子", "北京今天天气怎么样", "2026-08-09T12:00:01"),
         ])
         submitted = []
         finished = []
