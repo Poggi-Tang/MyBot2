@@ -173,7 +173,7 @@ namespace WeChatAuto.Components
         /// <param name="filePath">语音文件路径</param>
         public async Task SendVoiceMessage(string who, string filePath) => await Sender.SendVoiceMessage(who, filePath);
 
-        public async Task SendStreamingVoiceMessage(string who, string requestBody) => await Sender.SendStreamingVoiceMessage(who, requestBody);
+        public async Task SendStreamingVoiceMessage(string who, string requestBody, string endpoint = null) => await Sender.SendStreamingVoiceMessage(who, requestBody, endpoint);
 
 
         /// <summary>

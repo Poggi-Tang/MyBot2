@@ -38,6 +38,8 @@ class CodexRuntimeConfig:
     thread_max_context_chars: int = 12_000
     thread_max_age_seconds: int = 1_800
     model_reasoning_effort: str = "low"
+    yolo_mode: bool = False
+    restricted_workspace: bool = False
 
 
 @dataclass(frozen=True)
@@ -197,12 +199,17 @@ class CodexCliRunner:
         output_dir = task_root / "outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
         staged_inputs = stage_task_inputs(task_root, attachments)
-        matches = self.ability_store.matching(request)
+        matches = () if self.config.restricted_workspace else self.ability_store.matching(request)
         ability_context = "\n\n".join(value.prompt() for value in matches)
         attachment_context = self._attachment_prompt(staged_inputs, output_dir)
         incoming_context_chars = sum(map(len, (request, context, ability_context, attachment_context)))
+        thread_conversation = (
+            f"restricted::{conversation}"
+            if self.config.restricted_workspace
+            else conversation
+        )
         previous_thread, thread_decision = self.thread_store.select(
-            conversation,
+            thread_conversation,
             incoming_context_chars=incoming_context_chars,
             max_tasks=self.config.thread_max_tasks,
             max_context_chars=self.config.thread_max_context_chars,
@@ -242,19 +249,19 @@ class CodexCliRunner:
         try:
             completed, text, thread_id = self._execute(
                 prompt,
-                workspace=self.config.project_root,
+                workspace=task_root if self.config.restricted_workspace else self.config.project_root,
                 previous_thread=previous_thread,
                 ephemeral=False,
                 task_context=task_context,
             )
             if completed.returncode and previous_thread and self._resume_missing(completed):
-                self.thread_store.clear(conversation)
+                self.thread_store.clear(thread_conversation)
                 previous_thread = ""
                 thread_decision = "missing_thread"
                 prompt = self._initial_prompt(request, context, ability_context, attachment_context)
                 completed, text, thread_id = self._execute(
                     prompt,
-                    workspace=self.config.project_root,
+                    workspace=task_root if self.config.restricted_workspace else self.config.project_root,
                     previous_thread="",
                     ephemeral=False,
                     task_context=task_context,
@@ -266,7 +273,7 @@ class CodexCliRunner:
             active_thread = thread_id or previous_thread
             if active_thread:
                 self.thread_store.set(
-                    conversation,
+                    thread_conversation,
                     active_thread,
                     context_chars=len(prompt),
                     resumed=bool(previous_thread),
@@ -492,12 +499,6 @@ class CodexCliRunner:
             "-c", "model_providers.mybot.supports_websockets=false",
             "-c", "disable_response_storage=true",
             "-c", f'model_reasoning_effort="{self.config.model_reasoning_effort}"',
-            "-c", 'approval_policy="never"',
-            "-c", 'windows.sandbox="elevated"',
-            "-c", 'default_permissions="mybot_workspace"',
-            "-c", 'permissions.mybot_workspace.description="Current MyBot task workspace only"',
-            "-c", 'permissions.mybot_workspace.filesystem={":minimal"="read",":workspace_roots"={"."="write"}}',
-            "-c", "permissions.mybot_workspace.network.enabled=true",
             "-c", f'mcp_servers.mybot.command="{Path(sys.executable).as_posix()}"',
             "-c", 'mcp_servers.mybot.args=["-m","mybot_mcp.server"]',
             "-c", "mcp_servers.mybot.startup_timeout_sec=20",
@@ -508,10 +509,21 @@ class CodexCliRunner:
             "-c", 'mcp_servers.mybot.env_vars=["MYBOT_TASK_CONTEXT","MYBOT_TASK_TOKEN","PYTHONPATH","PYTHONUTF8","PYTHONIOENCODING"]',
             "--enable", "code_mode_host",
         ]
+        if not self.config.yolo_mode:
+            base.extend([
+                "-c", 'approval_policy="never"',
+                "-c", 'windows.sandbox="elevated"',
+                "-c", 'default_permissions="mybot_workspace"',
+                "-c", 'permissions.mybot_workspace.description="Current MyBot task workspace only"',
+                "-c", 'permissions.mybot_workspace.filesystem={":minimal"="read",":workspace_roots"={"."="write"}}',
+                "-c", "permissions.mybot_workspace.network.enabled=true",
+            ])
+        unrestricted = ["--dangerously-bypass-approvals-and-sandbox"] if self.config.yolo_mode else []
         if previous_thread:
             return [
                 *base,
                 "exec", "resume",
+                *unrestricted,
                 "--json", "--ignore-user-config", "--skip-git-repo-check",
                 "-m", self.config.model,
                 "--output-last-message", str(output_path),
@@ -520,6 +532,7 @@ class CodexCliRunner:
         return [
             *base,
             "exec",
+            *unrestricted,
             "--json", "--ignore-user-config", "--skip-git-repo-check",
             "-C", str(workspace),
             "-m", self.config.model,
@@ -541,7 +554,7 @@ class CodexCliRunner:
     def _initial_prompt(self, request: str, context: str, abilities: str, attachments: str = "") -> str:
         return "\n\n".join((
             "你是 MyBot 异步调度的 Codex CLI。实际完成任务并验证结果，不要只给建议。",
-            "任务上下文、附件和匹配能力已经完整注入，不要重复读取通用 MyBot Skill，也不要调用 get_task_context 或 get_capabilities。若明确匹配到快捷能力，只读取该能力自己的 SKILL.md、配方和脚本。只修改完成任务所需的文件；保留已有改动，不提交或推送 Git。",
+            "任务上下文、附件和匹配能力已经完整注入，不要重复读取通用 MyBot Skill，也不要调用 get_task_context 或 get_capabilities。若明确匹配到快捷能力，只读取该能力自己的 SKILL.md、配方和脚本。只修改完成任务所需的文件并保留已有改动。只有用户在当前任务中明确要求时，才可以执行 git commit、git push、创建远程仓库、PR、Issue 或 Release 等外部写操作；GitHub 操作优先使用本机已认证的 gh CLI。",
             "如果任务需要用户刚发的附件，但【任务附件】显示没有输入文件，必须明确说明没有拿到本次原文件并停止。严禁搜索或复用 data/codex/tasks、旧 outputs、其他会话或历史任务中的文件来代替本次附件。",
             "需要交付文件时，只能写入任务指定的 output_dir；调用 mybot.register_output_file 时只传相对于 output_dir 的准确文件名。登记失败或超时不要重试、不要等待，MyBot 会直接扫描 outputs 目录交付。不要把输入原件当作成果回传。",
             "最终回复必须适合微信发送，说明结果和验证，最多 1600 个中文字符，不输出内部推理或冗长日志。",
@@ -555,6 +568,7 @@ class CodexCliRunner:
     def _resume_prompt(request: str, context: str, abilities: str, attachments: str = "") -> str:
         return "\n\n".join((
             "继续处理同一微信会话的新任务，不重复已完成工作。任务上下文和匹配能力已经注入，不要调用 get_task_context 或 get_capabilities；若匹配到快捷能力，只读取对应能力的 SKILL.md、配方和脚本。",
+            "只有用户在当前任务中明确要求时，才可以执行 git commit、git push、创建远程仓库、PR、Issue 或 Release 等外部写操作；GitHub 操作优先使用本机已认证的 gh CLI。",
             "如果任务需要用户刚发的附件，但【任务附件】显示没有输入文件，必须明确说明没有拿到本次原文件并停止。严禁搜索或复用 data/codex/tasks、旧 outputs、其他会话或历史任务中的文件来代替本次附件。",
             "【最近对话增量】\n" + (context.strip()[-3_000:] or "[无]"),
             "【匹配的快捷能力】\n" + (abilities or "[无]"),

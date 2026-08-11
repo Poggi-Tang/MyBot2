@@ -196,7 +196,11 @@ def build_options(function: str, args: dict[str, Any]) -> Any:
         return {"who": args["who"], "filePath": file_path, "upload": encode_upload(file_path)}
     if function == "SendStreamingVoiceMessage":
         request = args["request"]
-        return {"who": args["who"], "request": request if isinstance(request, str) else json.dumps(request, ensure_ascii=False)}
+        return {
+            "who": args["who"],
+            "request": request if isinstance(request, str) else json.dumps(request, ensure_ascii=False),
+            "endpoint": str(args.get("endpoint", "")),
+        }
     if function == "GetChatHistory_Current_Window":
         return args["fetch_date"]
     if function == "ForwardMultipleMessage":

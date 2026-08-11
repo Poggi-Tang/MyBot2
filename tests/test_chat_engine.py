@@ -254,6 +254,24 @@ class ChatEngineTests(unittest.TestCase):
         self.assertEqual("aW1hZ2U=", messages[0].image_base64)
         self.assertEqual(1, messages[0].message_type)
 
+    def test_listener_event_keeps_reference_metadata(self):
+        payload = {
+            "chat_title": "引用测试群",
+            "new_message": [{
+                "who": "群友甲",
+                "message": "接着说",
+                "send_date": "2026-08-07T15:10:01",
+                "message_type": 0,
+                "is_reference": True,
+                "referenced_who": "圆子",
+                "referenced_message": "刚才的回复",
+            }],
+        }
+        message = parse_listener_event(payload, now=datetime(2026, 8, 7, 15, 10, 2))[0]
+        self.assertTrue(message.is_reference)
+        self.assertEqual("圆子", message.referenced_who)
+        self.assertEqual("刚才的回复", message.referenced_message)
+
     def test_listener_event_keeps_received_file_attachment(self):
         payload = {
             "chat_title": "文件测试",

@@ -1444,6 +1444,7 @@ namespace WeChatAuto.Components
             }
             if (item.ClassName.Equals("mmui::ChatBubbleReferItemView"))
             {
+                __PopulateReferenceMetadata(item, message);
                 //图片
                 if (item.Name.StartsWith("图片"))
                 {
@@ -1488,6 +1489,50 @@ namespace WeChatAuto.Components
             (string content, DateTime date) split = __ParseHistoryItem(item.Name.Trim());
             message.SendDate = split.date;
             message.Message = split.content;
+        }
+
+        private static void __PopulateReferenceMetadata(AutomationElement item, SimpleMessageBubble message)
+        {
+            message.IsReference = true;
+            var candidates = new List<string>();
+            if (!string.IsNullOrWhiteSpace(item?.Name))
+                candidates.Add(item.Name);
+            try
+            {
+                candidates.AddRange(item
+                    .FindAllDescendants()
+                    .Select(element => element?.Name)
+                    .Where(value => !string.IsNullOrWhiteSpace(value)));
+            }
+            catch
+            {
+                // Quote children can disappear while WeChat refreshes the message list.
+            }
+
+            foreach (var candidate in candidates.AsEnumerable().Reverse())
+            {
+                var lines = Regex.Split(candidate ?? string.Empty, "[\\r\\n]+")
+                    .Select(value => value.Trim())
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Reverse();
+                foreach (var line in lines)
+                {
+                    var match = Regex.Match(
+                        line,
+                        @"^(?:引用\s*)?(?<who>[^:：\r\n]{1,64})\s*[:：]\s*(?<message>.+)$");
+                    if (!match.Success)
+                        continue;
+                    var who = match.Groups["who"].Value.Trim();
+                    var referencedMessage = match.Groups["message"].Value.Trim();
+                    if (string.IsNullOrWhiteSpace(who)
+                        || string.IsNullOrWhiteSpace(referencedMessage)
+                        || Regex.IsMatch(who, @"^(?:今天|昨天|前天|上午|下午|晚上|\d{1,2})$"))
+                        continue;
+                    message.ReferencedWho = who;
+                    message.ReferencedMessage = referencedMessage;
+                    return;
+                }
+            }
         }
 
         private void __FetchImage(SimpleMessageBubble message, AutomationElement item, MessageMonitorOptions options, decimal ratio, Window subWin, AutomationElement root,HeaderInfo headerInfo, bool ignoreHistory = false)

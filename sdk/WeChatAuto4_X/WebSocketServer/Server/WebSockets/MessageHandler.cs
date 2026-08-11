@@ -246,7 +246,11 @@ public class MessageHandler : IDisposable
                         || !dicPayload.TryGetValue("who", out who)
                         || !dicPayload.TryGetValue("request", out var streamRequest))
                         throw new ArgumentException("Invalid streaming voice payload.");
-                    await client.SendStreamingVoiceMessage(who, streamRequest);
+                    await client.SendStreamingVoiceMessage(
+                        who,
+                        streamRequest,
+                        dicPayload.GetValueOrDefault("endpoint")
+                    );
                     break;
                 case "GetChatHistory_Current_Window":
                     payload = wrapper.Options!;

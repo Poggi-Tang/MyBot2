@@ -48,6 +48,9 @@ class IncomingMessage:
     message_type: int = -1
     image_base64: str = ""
     attachments: tuple[IncomingAttachment, ...] = ()
+    is_reference: bool = False
+    referenced_who: str = ""
+    referenced_message: str = ""
 
     @property
     def feature(self) -> str:
@@ -58,7 +61,8 @@ class IncomingMessage:
         )
         return (
             f"{self.chat_title}|{self.who}|{self.content}|{self.send_date}|"
-            f"{self.message_type}|{image_digest}|"
+            f"{self.message_type}|{image_digest}|{self.is_reference}|"
+            f"{self.referenced_who}|{self.referenced_message}|"
             + ",".join(item.sha256 or item.path or item.name for item in self.attachments)
         )
 
@@ -104,6 +108,14 @@ class ConversationMemory:
     def add_assistant(self, chat: str, content: str) -> None:
         self._messages[chat].append({"role": "assistant", "content": content})
 
+    def recent_assistant_texts(self, chat: str, limit: int = 8) -> tuple[str, ...]:
+        values = [
+            str(message.get("content", "")).strip()
+            for message in reversed(self._messages[chat])
+            if message.get("role") == "assistant" and str(message.get("content", "")).strip()
+        ]
+        return tuple(values[: max(0, limit)])
+
     def resolve_latest_visual(
         self,
         chat: str,
@@ -144,8 +156,10 @@ class ConversationMemory:
         policy_messages: list[str] | tuple[str, ...] = (),
     ) -> list[dict[str, Any]]:
         behavior = (
-            "自然回复当前微信消息，不要复述发送者标签。需要分成多条短消息时，"
-            "只用 <MYBOT_SPLIT> 分隔，最多四条。图片会作为视觉输入附在消息中。"
+            "自然回复当前微信消息，不要复述发送者标签。默认只发一条完整消息。只有内容确实包含"
+            "多个可以独立成立的聊天回合时，才用 <MYBOT_SPLIT> 在完整语义边界处分隔，最多四条；"
+            "每一条都要自然、完整，不能为了控制字符数拆句。普通换行不代表分成多条消息。"
+            "图片会作为视觉输入附在消息中。"
         )
         return [
             {"role": "system", "content": system_prompt},
@@ -519,6 +533,13 @@ def parse_listener_event(
             message_type = int(item.get("message_type", item.get("messageType", -1)))
         except (TypeError, ValueError):
             message_type = -1
+        is_reference = bool(item.get("is_reference", item.get("isReference", False))) or message_type == 17
+        referenced_who = repair_wechat_sdk_text(
+            item.get("referenced_who") or item.get("referencedWho") or ""
+        )
+        referenced_message = repair_wechat_sdk_text(
+            item.get("referenced_message") or item.get("referencedMessage") or ""
+        )
         attachments: list[IncomingAttachment] = []
         if file_path or file_name or content.startswith(("文件", "[文件]")):
             name = file_name or attachment_name_from_message(content)
@@ -555,6 +576,9 @@ def parse_listener_event(
                 message_type,
                 image_base64,
                 tuple(attachments),
+                is_reference,
+                referenced_who,
+                referenced_message,
             )
         )
     if not result:

@@ -26,18 +26,41 @@
   },
   "chat": {
     "ai_name": "圆子",
+    "group_reply_only_when_mentioned_or_referenced": true,
     "auto_start_enabled": false,
     "auto_start_targets": [],
     "max_concurrency": 3
   },
   "voice": {
     "enabled": false,
-    "base_url": "http://127.0.0.1:50001"
+    "source": "local",
+    "local_base_url": "http://127.0.0.1:50001",
+    "local_voice": "default",
+    "api_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_provider": "openai",
+    "api_model": "qwen3-tts-flash",
+    "api_key": "replace-me",
+    "api_voice": "Cherry",
+    "speed": 1.0,
+    "style": "轻松自然，像朋友聊天"
+  },
+  "personal_memory": {
+    "enabled": true,
+    "path": "data/personal-memory.json",
+    "episodic_path": "data/episodic-memory.json",
+    "daily_workspace_path": "data/people",
+    "name_aliases": {},
+    "ignored_names": []
+  },
+  "security": {
+    "enabled": true,
+    "administrators": []
   },
   "codex": {
     "enabled": false,
     "executable": "tools\\codex\\codex-x86_64-pc-windows-msvc.exe",
     "proxy_executable": "tools\\codex\\codex-responses-api-proxy-x86_64-pc-windows-msvc.exe",
-    "timeout_seconds": 900
+    "timeout_seconds": 900,
+    "yolo_mode": false
   }
 }

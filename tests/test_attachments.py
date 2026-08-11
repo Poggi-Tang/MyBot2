@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from mybot_ui.attachments import (
     ConversationAttachmentStore,
@@ -96,11 +97,12 @@ class AttachmentTests(unittest.TestCase):
             encoded = base64.b64encode(b"\x89PNG\r\n\x1a\nold-image").decode("ascii")
             store.remember("芝士圆子", (), image_base64=encoded)
 
-            attachments = store.for_request(
-                "芝士圆子",
-                "你把壁纸解压后发给我",
-                received_at=received.isoformat(),
-            )
+            with patch("mybot_ui.attachments.Path.home", return_value=root / "home"):
+                attachments = store.for_request(
+                    "芝士圆子",
+                    "你把壁纸解压后发给我",
+                    received_at=received.isoformat(),
+                )
             self.assertEqual(1, len(attachments))
             self.assertEqual("file", attachments[0].kind)
             self.assertEqual("壁纸.zip", attachments[0].name)

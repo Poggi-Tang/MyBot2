@@ -329,7 +329,7 @@ namespace WeChatAuto.Components
 			await WeChatInvoker.Call(SendVoiceMessageCore, filePath);
 		}
 
-		public async Task SendStreamingVoiceMessage(string who, string requestBody)
+		public async Task SendStreamingVoiceMessage(string who, string requestBody, string endpoint = null)
 		{
 			if (string.IsNullOrWhiteSpace(who))
 			{
@@ -346,7 +346,7 @@ namespace WeChatAuto.Components
 			if (string.IsNullOrWhiteSpace(requestBody) || requestBody.Length > 10_000)
 				throw new ArgumentException("CosyVoice stream request is empty or too large.", nameof(requestBody));
 
-			await WeChatInvoker.Call(SendStreamingVoiceMessageCore, requestBody);
+			await WeChatInvoker.Call(SendStreamingVoiceMessageCore, requestBody, endpoint);
 		}
 		/// <summary>
 		/// 文字转语音发送
@@ -454,7 +454,7 @@ namespace WeChatAuto.Components
 			}
 		}
 
-		private void SendStreamingVoiceMessageCore(UIA3Automation automation, string requestBody)
+		private void SendStreamingVoiceMessageCore(UIA3Automation automation, string requestBody, string endpoint)
 		{
 			var chatInfo = this._Client.ChatContent.ChatHeader.GetTitleCore(automation);
 			if (!chatInfo.CanTalk())
@@ -465,10 +465,15 @@ namespace WeChatAuto.Components
 			this._Client.MainWindow.Focus();
 
 			using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
-			using var request = new HttpRequestMessage(
-				HttpMethod.Post,
-				"http://127.0.0.1:50001/v1/audio/speech/stream"
-			);
+			var streamEndpoint = string.IsNullOrWhiteSpace(endpoint)
+				? new Uri("http://127.0.0.1:50001/v1/audio/speech/stream")
+				: new Uri(endpoint, UriKind.Absolute);
+			if (streamEndpoint.Scheme != Uri.UriSchemeHttp
+				&& streamEndpoint.Scheme != Uri.UriSchemeHttps)
+				throw new ArgumentException("Voice stream endpoint must use HTTP or HTTPS.", nameof(endpoint));
+			if (!streamEndpoint.IsLoopback)
+				throw new ArgumentException("Local voice stream endpoint must use a loopback host.", nameof(endpoint));
+			using var request = new HttpRequestMessage(HttpMethod.Post, streamEndpoint);
 			request.Content = new StringContent(requestBody, Encoding.UTF8, "application/json");
 			using var response = http.SendAsync(
 				request,

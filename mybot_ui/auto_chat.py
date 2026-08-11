@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import re
 import time
+import unicodedata
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
@@ -261,6 +261,59 @@ def incoming_dedupe_feature(incoming, *, include_sender: bool = True) -> str:
     return "\x00".join((sender, content, minute, media_digest, attachment_identity))
 
 
+def group_reply_trigger(
+    incoming,
+    *,
+    ai_names: tuple[str, ...] | list[str] | set[str],
+    recent_assistant_messages: tuple[str, ...] | list[str] = (),
+) -> tuple[bool, str]:
+    names = {
+        unicodedata.normalize("NFKC", str(name)).strip().casefold()
+        for name in ai_names
+        if str(name).strip()
+    }
+    content = unicodedata.normalize("NFKC", str(getattr(incoming, "content", "") or ""))
+    folded_content = content.casefold()
+    for name in names:
+        mention = rf"@{re.escape(name)}"
+        if re.search(rf"{mention}(?=$|[\s,，。！？!?：:；;])", folded_content):
+            return True, "mentioned"
+        # Conversation previews can remove WeChat's thin-space separator,
+        # turning a real mention into text such as “@圆子说话”.
+        if re.match(mention, folded_content):
+            return True, "mentioned"
+
+    try:
+        legacy_reference = int(getattr(incoming, "message_type", -1) or -1) == 17
+    except (TypeError, ValueError):
+        legacy_reference = False
+    is_reference = bool(getattr(incoming, "is_reference", False)) or legacy_reference
+    if not is_reference:
+        return False, "not_mentioned_or_referenced"
+
+    referenced_who = unicodedata.normalize(
+        "NFKC", str(getattr(incoming, "referenced_who", "") or "")
+    ).strip().casefold()
+    if referenced_who in names or referenced_who in {"我", "自己"}:
+        return True, "referenced_ai"
+
+    referenced_message = unicodedata.normalize(
+        "NFKC", str(getattr(incoming, "referenced_message", "") or "")
+    ).strip().casefold()
+    if referenced_message:
+        for assistant_message in recent_assistant_messages:
+            prior = unicodedata.normalize("NFKC", str(assistant_message)).strip().casefold()
+            if prior and (
+                referenced_message == prior
+                or referenced_message in prior
+                or prior in referenced_message
+            ):
+                return True, "referenced_recent_reply"
+    if not referenced_who and not referenced_message:
+        return True, "reference_metadata_unavailable"
+    return False, "referenced_other_member"
+
+
 def requested_action(text: str) -> ReplyAction:
     value = _strip_chat_mentions(re.sub(r"\s+", " ", text).strip())
     lowered = value.casefold()
@@ -312,27 +365,14 @@ def parse_auto_reply_segments(
         return (_prefixed(raw, prefix),)
 
     pieces = [item.strip() for item in raw.split(AUTO_REPLY_DELIMITER) if item.strip()]
-    if len(pieces) == 1:
-        paragraphs = [item.strip() for item in re.split(r"\n\s*\n", raw) if item.strip()]
-        if len(paragraphs) > 1:
-            pieces = paragraphs
-        else:
-            lines = [item.strip() for item in raw.splitlines() if item.strip()]
-            if 1 < len(lines) <= MAX_AUTO_REPLY_SEGMENTS:
-                pieces = lines
-
-    expanded: list[str] = []
-    for piece in pieces:
-        expanded.extend(_split_long_piece(piece, 120))
-    if len(expanded) > MAX_AUTO_REPLY_SEGMENTS:
-        combined = " ".join(expanded)
-        target = max(120, math.ceil(len(combined) / MAX_AUTO_REPLY_SEGMENTS))
-        if target > 500:
-            raise AutoReplySegmentsError("AI 自动回复无法安全拆分为短消息。")
-        expanded = _split_long_piece(combined, target)
-    if not expanded or len(expanded) > MAX_AUTO_REPLY_SEGMENTS:
+    if len(pieces) > MAX_AUTO_REPLY_SEGMENTS:
+        pieces = [
+            *pieces[: MAX_AUTO_REPLY_SEGMENTS - 1],
+            "\n".join(pieces[MAX_AUTO_REPLY_SEGMENTS - 1 :]),
+        ]
+    if not pieces or len(pieces) > MAX_AUTO_REPLY_SEGMENTS:
         raise AutoReplySegmentsError("AI 自动回复分段数量无效。")
-    return tuple(_prefixed(piece, prefix) for piece in expanded)
+    return tuple(_prefixed(piece, prefix) for piece in pieces)
 
 
 def sanitize_auto_reply_text(text: str) -> str:
@@ -525,32 +565,6 @@ def _is_allowed_sticker_item(item: dict) -> bool:
         return False
     mode = _item_field(item, "Mode").casefold()
     return bool(_item_field(item, "Hash")) if mode == "visual" else bool(_item_field(item, "Name"))
-
-
-def _split_long_piece(text: str, target: int) -> list[str]:
-    if len(text) <= target:
-        return [text]
-    sentences = [
-        value.strip()
-        for value in re.findall(r".*?(?:[。！？!?…]+|$)", text, flags=re.DOTALL)
-        if value.strip()
-    ]
-    values: list[str] = []
-    current = ""
-    for sentence in sentences:
-        chunks = (
-            [sentence[index : index + target] for index in range(0, len(sentence), target)]
-            if len(sentence) > target
-            else [sentence]
-        )
-        for chunk in chunks:
-            if current and len(current) + len(chunk) > target:
-                values.append(current.strip())
-                current = ""
-            current += chunk
-    if current.strip():
-        values.append(current.strip())
-    return values
 
 
 def _prefixed(text: str, prefix: str) -> str:

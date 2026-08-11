@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from mybot_ui.codex_runner import CodexCliRunner, CodexRuntimeConfig, CodexThreadStore
 from mybot_ui.extension_abilities import ExtensionAbilityStore
@@ -95,6 +96,101 @@ class CodexRunnerTests(unittest.TestCase):
             self.assertNotIn("get_task_context", enabled_tools)
             self.assertNotIn("get_capabilities", enabled_tools)
             self.assertTrue(any("PYTHONUTF8" in value for value in initial))
+
+    def test_yolo_mode_bypasses_approvals_and_workspace_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exe = root / "codex.exe"
+            proxy = root / "proxy.exe"
+            exe.touch()
+            proxy.touch()
+            runner = CodexCliRunner(
+                CodexRuntimeConfig(
+                    exe,
+                    proxy,
+                    root,
+                    "https://example.com",
+                    "key",
+                    "model",
+                    yolo_mode=True,
+                ),
+                ExtensionAbilityStore(root / "extensions"),
+                CodexThreadStore(root / "threads.json"),
+            )
+            output = root / "last.txt"
+            initial = runner._command(
+                "http://127.0.0.1:1/v1", output, root, previous_thread="", ephemeral=False
+            )
+            resumed = runner._command(
+                "http://127.0.0.1:1/v1", output, root, previous_thread="abc", ephemeral=False
+            )
+
+            for command in (initial, resumed):
+                self.assertIn("--dangerously-bypass-approvals-and-sandbox", command)
+                self.assertNotIn('default_permissions="mybot_workspace"', command)
+                self.assertNotIn('approval_policy="never"', command)
+
+    def test_restricted_mode_uses_task_workspace_and_skips_abilities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            abilities = Mock()
+            thread_store = CodexThreadStore(root / "threads.json")
+            thread_store.set("会话", "admin-thread")
+            runner = CodexCliRunner(
+                CodexRuntimeConfig(
+                    root / "codex.exe",
+                    root / "proxy.exe",
+                    root,
+                    "https://example.com",
+                    "key",
+                    "model",
+                    restricted_workspace=True,
+                ),
+                abilities,
+                thread_store,
+            )
+
+            self.assertTrue(runner.config.restricted_workspace)
+            self.assertFalse(runner.config.yolo_mode)
+            completed = subprocess.CompletedProcess(["codex"], 0, "", "")
+            with patch.object(
+                runner,
+                "_execute",
+                side_effect=(
+                    (completed, "首次完成", "thread-1"),
+                    (completed, "继续完成", "thread-1"),
+                ),
+            ) as execute:
+                runner._run_locked("会话", "首次任务", "", "task-1", ())
+                runner._run_locked("会话", "后续任务", "", "task-2", ())
+
+            self.assertEqual(
+                root / "data" / "codex" / "tasks" / "task-1",
+                execute.call_args_list[0].kwargs["workspace"],
+            )
+            self.assertEqual(
+                root / "data" / "codex" / "tasks" / "task-2",
+                execute.call_args_list[1].kwargs["workspace"],
+            )
+            self.assertEqual("", execute.call_args_list[0].kwargs["previous_thread"])
+            self.assertEqual("thread-1", execute.call_args_list[1].kwargs["previous_thread"])
+            self.assertEqual("admin-thread", thread_store.get("会话"))
+            self.assertEqual("thread-1", thread_store.get("restricted::会话"))
+            abilities.matching.assert_not_called()
+
+    def test_prompt_allows_explicitly_requested_github_writes(self):
+        prompt = CodexCliRunner._initial_prompt(
+            object(), "把项目推送到 GitHub", "", "", "成果输出目录：C:/task/outputs"
+        )
+        resumed = CodexCliRunner._resume_prompt(
+            "把项目推送到 GitHub", "", "", "成果输出目录：C:/task/outputs"
+        )
+
+        for value in (prompt, resumed):
+            self.assertIn("只有用户在当前任务中明确要求时", value)
+            self.assertIn("git push", value)
+            self.assertIn("gh CLI", value)
+            self.assertNotIn("不提交或推送 Git", value)
 
     def test_task_outputs_are_limited_to_output_directory(self):
         with tempfile.TemporaryDirectory() as directory:

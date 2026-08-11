@@ -5,6 +5,7 @@ from mybot_ui.auto_chat import (
     AUTO_REPLY_DELIMITER,
     ListenerMessageCursor,
     ReplyKind,
+    group_reply_trigger,
     incoming_dedupe_feature,
     infer_sticker_query,
     model_sticker_request,
@@ -182,6 +183,72 @@ class ReplyPlanningTests(unittest.TestCase):
                 self.assertEqual(ReplyKind.STICKER, action.kind)
                 self.assertEqual(expected, action.argument)
 
+    def test_group_reply_trigger_accepts_wechat_mention_spacing(self):
+        incoming = type("Message", (), {
+            "content": "@圆子\u2005你怎么看",
+            "message_type": 0,
+            "is_reference": False,
+        })()
+        self.assertEqual(
+            (True, "mentioned"),
+            group_reply_trigger(incoming, ai_names=("圆子",)),
+        )
+
+    def test_group_reply_trigger_accepts_compact_preview_mention(self):
+        incoming = type("Message", (), {
+            "content": "@圆子说话",
+            "message_type": 0,
+            "is_reference": False,
+        })()
+        self.assertEqual(
+            (True, "mentioned"),
+            group_reply_trigger(incoming, ai_names=("圆子",)),
+        )
+
+    def test_group_reply_trigger_only_accepts_quotes_of_ai_messages(self):
+        quoted_ai = type("Message", (), {
+            "content": "这个呢",
+            "message_type": 0,
+            "is_reference": True,
+            "referenced_who": "圆子",
+            "referenced_message": "上一次回复",
+        })()
+        quoted_other = type("Message", (), {
+            "content": "这个呢",
+            "message_type": 0,
+            "is_reference": True,
+            "referenced_who": "群友甲",
+            "referenced_message": "群友的消息",
+        })()
+        self.assertEqual(
+            (True, "referenced_ai"),
+            group_reply_trigger(quoted_ai, ai_names=("圆子",)),
+        )
+        self.assertEqual(
+            (False, "referenced_other_member"),
+            group_reply_trigger(
+                quoted_other,
+                ai_names=("圆子",),
+                recent_assistant_messages=("上一次回复",),
+            ),
+        )
+
+    def test_group_reply_trigger_matches_recent_reply_when_sender_is_missing(self):
+        incoming = type("Message", (), {
+            "content": "接着说",
+            "message_type": 17,
+            "referenced_who": "",
+            "referenced_message": "上一次回复",
+        })()
+        self.assertEqual(
+            (True, "referenced_recent_reply"),
+            group_reply_trigger(
+                incoming,
+                ai_names=("圆子",),
+                recent_assistant_messages=("上一次回复",),
+            ),
+        )
+
     def test_sticker_explanation_follow_up_is_text(self):
         self.assertEqual(
             ReplyKind.TEXT,
@@ -194,7 +261,11 @@ class ReplyPlanningTests(unittest.TestCase):
 
     def test_reply_output_removes_forbidden_punctuation(self):
         self.assertEqual("好呀明白了", sanitize_auto_reply_text("好呀~明白了。"))
-        self.assertEqual(("第一句", "第二句"), parse_auto_reply_segments("第一句。\n第二句~"))
+        self.assertEqual(("第一句\n第二句",), parse_auto_reply_segments("第一句。\n第二句~"))
+
+    def test_long_coherent_reply_stays_in_one_bubble(self):
+        reply = "这是一段需要保持完整语义的回复，" * 20
+        self.assertEqual((reply,), parse_auto_reply_segments(reply))
 
     def test_reply_output_removes_trailing_model_trace_artifact(self):
         self.assertEqual(
@@ -252,6 +323,10 @@ class ReplyPlanningTests(unittest.TestCase):
     def test_model_delimiter_creates_multiple_bubbles(self):
         segments = parse_auto_reply_segments(f"第一句{AUTO_REPLY_DELIMITER}第二句")
         self.assertEqual(("第一句", "第二句"), segments)
+
+    def test_excess_model_segments_merge_into_the_last_bubble(self):
+        reply = AUTO_REPLY_DELIMITER.join(("一", "二", "三", "四", "五"))
+        self.assertEqual(("一", "二", "三", "四\n五"), parse_auto_reply_segments(reply))
 
 
 if __name__ == "__main__":

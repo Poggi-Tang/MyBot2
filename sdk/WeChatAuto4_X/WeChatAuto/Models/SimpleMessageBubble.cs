@@ -68,9 +68,24 @@ namespace WeChatAuto.Models
         [JsonProperty("file_path")]
         public string FilePath { get; set; }
 
+        /// <summary>当前气泡是否为引用回复。</summary>
+        [Key(9)]
+        [JsonProperty("is_reference")]
+        public bool IsReference { get; set; }
+
+        /// <summary>被引用消息的发送者；微信未暴露时为空。</summary>
+        [Key(10)]
+        [JsonProperty("referenced_who")]
+        public string ReferencedWho { get; set; }
+
+        /// <summary>被引用的消息内容；微信未暴露时为空。</summary>
+        [Key(11)]
+        [JsonProperty("referenced_message")]
+        public string ReferencedMessage { get; set; }
+
         public override string ToString()
         {
-            return $"who={this.Who} Message={this.Message} SendDate={this.SendDate.ToString("yyyy-MM-dd HH:mm")} Image={(this.Image != null ? "有图片" : "无")} MessageType={this.MessageType.ToString()} ImageFile={this.ImageFile}";
+            return $"who={this.Who} Message={this.Message} SendDate={this.SendDate.ToString("yyyy-MM-dd HH:mm")} Image={(this.Image != null ? "有图片" : "无")} MessageType={this.MessageType.ToString()} ImageFile={this.ImageFile} IsReference={this.IsReference} ReferencedWho={this.ReferencedWho}";
         }
         /// <summary>
         /// 得到特征值
@@ -81,11 +96,11 @@ namespace WeChatAuto.Models
             var date = SendDate;
             if (date == default)
             {
-                return $"{Who}|{Message}|{MessageType.ToString()}";
+                return $"{Who}|{Message}|{MessageType.ToString()}|{IsReference}|{ReferencedWho}|{ReferencedMessage}";
             }
             else
             {
-                return $"{Who}|{Message}|{date.ToString("yyyy-MM-dd HH:mm")}|{MessageType.ToString()}";
+                return $"{Who}|{Message}|{date.ToString("yyyy-MM-dd HH:mm")}|{MessageType.ToString()}|{IsReference}|{ReferencedWho}|{ReferencedMessage}";
             }
         }
 
@@ -102,6 +117,9 @@ namespace WeChatAuto.Models
                 ImageBase64Str = this.ImageBase64Str,
                 FileName = this.FileName,
                 FilePath = this.FilePath,
+                IsReference = this.IsReference,
+                ReferencedWho = this.ReferencedWho,
+                ReferencedMessage = this.ReferencedMessage,
             };
         }
 

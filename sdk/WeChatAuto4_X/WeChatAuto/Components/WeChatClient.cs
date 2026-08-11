@@ -557,7 +557,7 @@ namespace WeChatAuto.Components
         /// <param name="who">好友昵称或群聊名称</param>
         /// <param name="filePath">语音文件路径</param>
         public async Task SendVoiceMessage(string who, string filePath) => await ChatContent.SendVoiceMessage(who, filePath);
-        public async Task SendStreamingVoiceMessage(string who, string requestBody) => await ChatContent.SendStreamingVoiceMessage(who, requestBody);
+        public async Task SendStreamingVoiceMessage(string who, string requestBody, string endpoint = null) => await ChatContent.SendStreamingVoiceMessage(who, requestBody, endpoint);
         /// <summary>
         /// 给本聊天窗口发送语音消息，请确保本聊天窗口可用.
         /// 请在声音-->设置-->将输入设备改成: Cable output
