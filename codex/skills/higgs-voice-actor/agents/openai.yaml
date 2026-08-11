@@ -1,0 +1,4 @@
+interface:
+  display_name: "Higgs Voice Actor"
+  short_description: "为 Higgs TTS 生成有情绪转折的配音表演计划"
+  default_prompt: "Use $higgs-voice-actor to turn this reply into a Higgs TTS performance plan."

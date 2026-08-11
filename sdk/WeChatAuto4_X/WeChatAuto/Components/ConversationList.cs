@@ -411,22 +411,28 @@ namespace WeChatAuto.Components
             // WeChat 4.x does not consistently keep the exact conversation
             // highlighted. Select the named result explicitly; Enter can
             // otherwise open the web-search row and report a false miss.
-            var exactItem = popupResult.Result.FindFirstDescendant(cf =>
-                cf.ByAutomationId($"session_item_{who}"));
-            exactItem ??= popupResult.Result.FindFirstDescendant(cf => cf.ByName(who));
-            exactItem ??= popupResult.Result
+            var exactItem = popupResult.Result
                 .FindAllDescendants(cf => cf.ByControlType(ControlType.ListItem))
-                .FirstOrDefault(item => (item.Name ?? string.Empty)
-                    .Split('\n')
-                    .Any(line => string.Equals(line.Trim(), who.Trim(), StringComparison.Ordinal)));
-            if (exactItem != null)
+                .FirstOrDefault(item =>
+                    string.Equals(
+                        item.AutomationId,
+                        $"session_item_{who}",
+                        StringComparison.Ordinal)
+                    || (item.Name ?? string.Empty)
+                        .Split('\n')
+                        .Any(line => string.Equals(
+                            line.Trim(),
+                            who.Trim(),
+                            StringComparison.Ordinal)));
+            if (exactItem == null)
             {
-                exactItem.Click();
+                // Never press Enter without an exact session result. WeChat can
+                // focus the "聊天记录" or web-search row when no session matches.
+                edit.AsTextBox().Text = string.Empty;
+                _Client.ChatContent.Sender.FocuseSenderCore(automation);
+                return false;
             }
-            else
-            {
-                Keyboard.Type(VirtualKeyShort.ENTER);
-            }
+            exactItem.Click();
 
             for (var attempt = 0; attempt < 20; attempt++)
             {

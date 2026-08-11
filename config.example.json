@@ -42,7 +42,9 @@
     "api_key": "replace-me",
     "api_voice": "Cherry",
     "speed": 1.0,
-    "style": "轻松自然，像朋友聊天"
+    "style": "轻松自然，像朋友聊天",
+    "performance_enabled": true,
+    "performance_intensity": "natural"
   },
   "personal_memory": {
     "enabled": true,

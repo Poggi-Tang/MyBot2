@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from PySide6.QtCore import Qt
+
 from mybot_ui.api import GatewayResult
 from mybot_ui.app_v2 import MainWindow
 from mybot_ui.attachments import ConversationAttachmentStore, IncomingAttachment
@@ -834,6 +836,64 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
 
 
 class AutoChatStartupTests(unittest.TestCase):
+    def test_split_target_lists_merge_group_and_private_selections(self):
+        def fake_list(*items):
+            values = [
+                SimpleNamespace(
+                    text=lambda value=value: value[0],
+                    checkState=lambda value=value: value[1],
+                )
+                for value in items
+            ]
+            return SimpleNamespace(
+                count=lambda: len(values),
+                item=lambda index: values[index],
+            )
+
+        window = SimpleNamespace(
+            auto_chat_group_targets=fake_list(
+                ("测试群", Qt.Checked),
+                ("未接管群", Qt.Unchecked),
+            ),
+            auto_chat_private_targets=fake_list(("芝士圆子", Qt.Checked)),
+        )
+
+        self.assertEqual(
+            {"测试群", "芝士圆子"},
+            MainWindow._selected_auto_chat_targets(window),
+        )
+
+    def test_cached_group_metadata_avoids_startup_type_rescan(self):
+        response = GatewayResult(True, ["测试群", "芝士圆子"])
+        calls = []
+        window = SimpleNamespace(
+            gateway=SimpleNamespace(
+                connected=True,
+                call=lambda account, function, options: (
+                    calls.append((account, function, options)) or response
+                ),
+            ),
+            account="圆子",
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
+            _auto_selection_restored=True,
+            _consume_auto_start_targets=lambda _available: set(),
+            _auto_chat_targets_loaded=False,
+            _append_chat=lambda *_args: None,
+            _refresh_attachment_list=lambda: None,
+            _group_metadata_ready=True,
+            _group_metadata_refresh_pending=False,
+            auto_chat_running=False,
+            _refresh_group_metadata=lambda: self.fail("cached metadata must avoid a startup scan"),
+            _run_future=lambda value, callback: callback(value),
+        )
+
+        with patch.object(MainWindow, "_populate_auto_chat_targets") as populate:
+            MainWindow._refresh_auto_chat_targets(window)
+
+        self.assertEqual([("圆子", "GetAllConversations", "")], calls)
+        populate.assert_called_once_with(window, ["测试群", "芝士圆子"], {"芝士圆子"})
+        self.assertFalse(window._group_metadata_refresh_pending)
+
     def test_running_target_change_schedules_listener_sync(self):
         calls = []
         timer = SimpleNamespace(start=lambda: calls.append("started"))

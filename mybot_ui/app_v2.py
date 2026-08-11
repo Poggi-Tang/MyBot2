@@ -100,11 +100,17 @@ from .reply_policy import ReplyPolicy, ReplyProfile
 from .realtime_tools import RealtimeToolExecutor, detect_realtime_request
 from .security_policy import SecurityPolicy
 from .task_status import ACTIVE_TASK_STATES, TaskStatusPool
+from .voice_actor import (
+    HiggsVoiceActor,
+    VoicePerformancePlan,
+    fallback_voice_performance,
+)
 from .voice_synthesis import (
     VoiceApiConfig,
     list_boson_voices,
     local_voice_stream_endpoint,
     synthesize_voice_file,
+    synthesize_voice_performance,
 )
 
 
@@ -411,6 +417,7 @@ class MainWindow(QMainWindow):
         self.gateway.add_listener(self.gateway_events.received.emit)
         self.account = ""
         self.model_client = ChatModelClient()
+        self.voice_actor = HiggsVoiceActor(self.model_client)
         self.memory = ConversationMemory()
         configured_chat = self.settings.get("chat", {})
         if not isinstance(configured_chat, dict):
@@ -535,6 +542,7 @@ class MainWindow(QMainWindow):
             if isinstance(cached_groups, list)
             else set()
         )
+        self._available_auto_chat_targets: tuple[str, ...] = ()
         self._group_metadata_ready = isinstance(cached_groups, list)
         self._group_metadata_waiting: deque[tuple[Any, str, float | None]] = deque()
         self._pending_image_edits: dict[str, tuple[str, float]] = {}
@@ -666,7 +674,7 @@ class MainWindow(QMainWindow):
         self._auto_selection_save_timer.stop()
         self._auto_listener_sync_timer.stop()
         self._task_status_timer.stop()
-        if hasattr(self, "auto_chat_targets"):
+        if MainWindow._auto_chat_target_lists(self):
             self._persist_auto_chat_selection()
         if self._window_layout_ready and self.isVisible():
             self._save_window_layout()
@@ -797,12 +805,25 @@ class MainWindow(QMainWindow):
 
         target_card, target_box = card("接管的会话")
         target_row = QHBoxLayout()
-        self.auto_chat_targets = QListWidget()
-        self.auto_chat_targets.setMinimumHeight(150)
-        self.auto_chat_targets.itemChanged.connect(self._auto_chat_target_changed)
-        target_row.addWidget(self.auto_chat_targets, 1)
+        group_targets = QVBoxLayout()
+        group_targets.addWidget(label("群聊", "muted"))
+        self.auto_chat_group_targets = QListWidget()
+        self.auto_chat_group_targets.setMinimumHeight(150)
+        self.auto_chat_group_targets.itemChanged.connect(self._auto_chat_target_changed)
+        group_targets.addWidget(self.auto_chat_group_targets)
+        target_row.addLayout(group_targets, 1)
+
+        private_targets = QVBoxLayout()
+        private_targets.addWidget(label("私聊", "muted"))
+        self.auto_chat_private_targets = QListWidget()
+        self.auto_chat_private_targets.setMinimumHeight(150)
+        self.auto_chat_private_targets.itemChanged.connect(self._auto_chat_target_changed)
+        private_targets.addWidget(self.auto_chat_private_targets)
+        target_row.addLayout(private_targets, 1)
+
         target_buttons = QVBoxLayout()
         target_buttons.addWidget(button("刷新会话", self._refresh_auto_chat_targets))
+        target_buttons.addWidget(button("重新识别类型", self._refresh_group_metadata))
         target_buttons.addWidget(button("全选", self._select_all_auto_targets))
         target_buttons.addWidget(button("清空", self._clear_auto_targets))
         target_buttons.addStretch()
@@ -1147,6 +1168,26 @@ class MainWindow(QMainWindow):
         voice_common.addWidget(self.voice_speed, 0, 1)
         voice_common.addWidget(label("风格指令", "muted"), 0, 2)
         voice_common.addWidget(self.voice_style, 0, 3)
+        self.voice_performance_enabled = QCheckBox("启用配音表演")
+        self.voice_performance_enabled.setChecked(
+            bool(voice_settings.get("performance_enabled", True))
+        )
+        self.voice_performance_intensity = QComboBox()
+        self.voice_performance_intensity.addItem("克制", "restrained")
+        self.voice_performance_intensity.addItem("自然", "natural")
+        self.voice_performance_intensity.addItem("戏剧", "dramatic")
+        performance_intensity = str(
+            voice_settings.get("performance_intensity", "natural")
+        )
+        performance_index = self.voice_performance_intensity.findData(
+            performance_intensity
+        )
+        self.voice_performance_intensity.setCurrentIndex(
+            performance_index if performance_index >= 0 else 1
+        )
+        voice_common.addWidget(self.voice_performance_enabled, 1, 0, 1, 2)
+        voice_common.addWidget(label("表演强度", "muted"), 1, 2)
+        voice_common.addWidget(self.voice_performance_intensity, 1, 3)
         voice_box.addLayout(voice_common)
         self.voice_source.currentIndexChanged.connect(self._update_voice_source_fields)
         self.voice_api_provider.currentIndexChanged.connect(self._update_voice_source_fields)
@@ -1189,9 +1230,9 @@ class MainWindow(QMainWindow):
         is_boson = is_api and self.voice_api_provider.currentData() == "boson"
         self.voice_local_panel.setVisible(not is_api)
         self.voice_api_panel.setVisible(is_api)
-        self.voice_speed.setEnabled(not is_boson)
-        self.voice_style.setEnabled(not is_boson)
-        boson_tip = "Boson higgs-tts-3 当前不支持语速和风格参数。" if is_boson else ""
+        self.voice_speed.setEnabled(True)
+        self.voice_style.setEnabled(True)
+        boson_tip = "通过 Higgs 配音表演层转换为行内标签。" if is_boson else ""
         self.voice_speed.setToolTip(boson_tip)
         self.voice_style.setToolTip(boson_tip)
         self.voice_refresh_button.setVisible(is_boson)
@@ -2353,7 +2394,7 @@ class MainWindow(QMainWindow):
         if widget.currentItem() is not None:
             selected_path = str(widget.currentItem().data(Qt.UserRole) or "")
         widget.clear()
-        targets = self._selected_auto_chat_targets() if hasattr(self, "auto_chat_targets") else set()
+        targets = self._selected_auto_chat_targets()
         for conversation in sorted(targets):
             for attachment in reversed(self.attachment_store.all(conversation)):
                 size = f"{attachment.size / 1024:.1f} KB" if attachment.size < 1024 * 1024 else f"{attachment.size / 1024 / 1024:.2f} MB"
@@ -2513,6 +2554,42 @@ class MainWindow(QMainWindow):
         self._select_page(0)
         self._append_chat("功能列表", f"已选中 {function}。自动聊天只负责消息接管；该功能可在测试模块或 SDK 中单独验证。")
 
+    def _auto_chat_target_lists(self) -> tuple[QListWidget, ...]:
+        split_lists = tuple(
+            widget
+            for name in ("auto_chat_group_targets", "auto_chat_private_targets")
+            if (widget := getattr(self, name, None)) is not None
+        )
+        if split_lists:
+            return split_lists
+        legacy = getattr(self, "auto_chat_targets", None)
+        return (legacy,) if legacy is not None else ()
+
+    def _populate_auto_chat_targets(self, names: list[str], checked: set[str]) -> None:
+        self._available_auto_chat_targets = tuple(names)
+        lists = MainWindow._auto_chat_target_lists(self)
+        if not lists:
+            return
+        self._loading_auto_chat_targets = True
+        try:
+            for widget in lists:
+                widget.clear()
+            group_widget = getattr(self, "auto_chat_group_targets", None)
+            private_widget = getattr(self, "auto_chat_private_targets", None)
+            for name in names:
+                target_widget = (
+                    group_widget
+                    if group_widget is not None and name in self._auto_chat_groups
+                    else private_widget
+                    if private_widget is not None
+                    else lists[0]
+                )
+                item = QListWidgetItem(name, target_widget)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked if name in checked else Qt.Unchecked)
+        finally:
+            self._loading_auto_chat_targets = False
+
     def _refresh_auto_chat_targets(self) -> None:
         if not self.gateway.connected:
             return
@@ -2528,19 +2605,13 @@ class MainWindow(QMainWindow):
                 self._auto_selection_restored = True
             startup_targets = self._consume_auto_start_targets(set(names))
             checked.update(startup_targets)
-            self._loading_auto_chat_targets = True
-            try:
-                self.auto_chat_targets.clear()
-                for name in names:
-                    item = QListWidgetItem(name, self.auto_chat_targets)
-                    item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-                    item.setCheckState(Qt.Checked if name in checked else Qt.Unchecked)
-            finally:
-                self._loading_auto_chat_targets = False
+            MainWindow._populate_auto_chat_targets(self, names, checked)
             self._auto_chat_targets_loaded = True
-            self._append_chat("自动聊天", f"已加载 {self.auto_chat_targets.count()} 个群聊/私聊")
+            self._append_chat("自动聊天", f"已加载 {len(names)} 个群聊/私聊")
             self._refresh_attachment_list()
-            self._group_metadata_refresh_pending = True
+            self._group_metadata_refresh_pending = not getattr(
+                self, "_group_metadata_ready", False
+            )
             if startup_targets and not self.auto_chat_running:
                 self._append_chat("自动聊天", "启动时自动锁定：" + "、".join(sorted(startup_targets)))
                 operations.event("workflow", "auto_chat_startup_lock", {
@@ -2548,7 +2619,7 @@ class MainWindow(QMainWindow):
                     "targets": sorted(startup_targets),
                 })
                 QTimer.singleShot(0, self._start_auto_chat)
-            else:
+            elif not getattr(self, "_group_metadata_ready", False):
                 self._refresh_group_metadata()
 
         self._run_future(self.gateway.call(self.account, "GetAllConversations", ""), loaded)
@@ -2574,9 +2645,10 @@ class MainWindow(QMainWindow):
 
     def _selected_auto_chat_targets(self) -> set[str]:
         return {
-            self.auto_chat_targets.item(index).text()
-            for index in range(self.auto_chat_targets.count())
-            if self.auto_chat_targets.item(index).checkState() == Qt.Checked
+            widget.item(index).text()
+            for widget in MainWindow._auto_chat_target_lists(self)
+            for index in range(widget.count())
+            if widget.item(index).checkState() == Qt.Checked
         }
 
     def _auto_chat_target_changed(self, _item: QListWidgetItem) -> None:
@@ -2664,12 +2736,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"接管会话保存失败：{exc}", 5000)
 
     def _select_all_auto_targets(self) -> None:
-        for index in range(self.auto_chat_targets.count()):
-            self.auto_chat_targets.item(index).setCheckState(Qt.Checked)
+        for widget in MainWindow._auto_chat_target_lists(self):
+            for index in range(widget.count()):
+                widget.item(index).setCheckState(Qt.Checked)
 
     def _clear_auto_targets(self) -> None:
-        for index in range(self.auto_chat_targets.count()):
-            self.auto_chat_targets.item(index).setCheckState(Qt.Unchecked)
+        for widget in MainWindow._auto_chat_target_lists(self):
+            for index in range(widget.count()):
+                widget.item(index).setCheckState(Qt.Unchecked)
 
     def _save_settings(self) -> None:
         span = operations.start("ui", "save_settings", details={"path": str(self.config_path)})
@@ -2748,6 +2822,10 @@ class MainWindow(QMainWindow):
                 "api_voice_aliases": dict(sorted(self._boson_voice_labels.items())),
                 "speed": self.voice_speed.value(),
                 "style": self.voice_style.text().strip(),
+                "performance_enabled": self.voice_performance_enabled.isChecked(),
+                "performance_intensity": str(
+                    self.voice_performance_intensity.currentData()
+                ),
             },
         })
         try:
@@ -2836,8 +2914,9 @@ class MainWindow(QMainWindow):
 
     def _edit_reply_policy(self) -> None:
         targets = [
-            self.auto_chat_targets.item(index).text()
-            for index in range(self.auto_chat_targets.count())
+            widget.item(index).text()
+            for widget in MainWindow._auto_chat_target_lists(self)
+            for index in range(widget.count())
         ]
         dialog = ReplyPolicyDialog(self._reply_policy, targets, self)
         if dialog.exec() != QDialog.Accepted:
@@ -5025,7 +5104,7 @@ class MainWindow(QMainWindow):
 
     def _send_auto_voice(self, incoming, session: int, text: str, full_reply: str) -> None:
         MainWindow._task_status_update(
-            self, incoming, state="sending", stage="合成并发送语音", kind="语音"
+            self, incoming, state="sending", stage="编排配音表演", kind="语音"
         )
         text = sanitize_auto_reply_text(
             MainWindow._protect_security_text(self, incoming, text)
@@ -5039,55 +5118,125 @@ class MainWindow(QMainWindow):
             voice_speed = min(2.0, max(0.5, float(voice.get("speed", 1.0))))
         except (TypeError, ValueError):
             voice_speed = 1.0
-        if source == "api":
-            self._send_auto_voice_api(incoming, session, text, full_reply, voice, voice_speed)
-            return
+        base_style = str(voice.get("style", "轻松自然，像朋友聊天")).strip()
+        intensity = str(voice.get("performance_intensity", "natural")).strip()
 
-        request = {
-            "input": text,
-            "speed": voice_speed,
-            "style": str(voice.get("style", "轻松自然，像朋友聊天")),
-        }
-        try:
-            endpoint = local_voice_stream_endpoint(str(
-                voice.get("local_base_url", voice.get("base_url", "http://127.0.0.1:50001"))
-            ))
-        except Exception as exc:
-            self._append_chat("自动聊天", f"本地语音配置无效：{exc}")
-            self._finish_auto_message(incoming, success=False, error=exc)
-            return
-        options = build_options(
-            "SendStreamingVoiceMessage",
-            {"who": incoming.chat_title, "request": request, "endpoint": endpoint},
-        )
-        # Register before the SDK call: preview polling can see the new bubble
-        # before the asynchronous send-success callback runs.
-        self._message_cursor.record_outgoing_voice(incoming.chat_title, text)
-        self._suppress_outgoing_media_preview(incoming.chat_title)
-
-        def sent(result: GatewayResult) -> None:
-            if session != self._auto_chat_session or not result.ok or result.value is False:
-                self._message_cursor.cancel_outgoing_voice(incoming.chat_title, text)
-                self._append_chat("自动聊天", f"语音发送失败：{result.error or result.value}")
+        def dispatch(performance: VoicePerformancePlan | None) -> None:
+            if session != self._auto_chat_session or not self.auto_chat_running:
                 self._finish_auto_message(
-                    incoming,
-                    success=False,
-                    error=result.error or result.value,
+                    incoming, success=False, error="自动聊天会话已停止"
                 )
                 return
-            self._auto_chat_last_reply[incoming.chat_title] = time.monotonic()
-            self.memory.add_assistant(incoming.chat_title, full_reply)
-            MainWindow._record_daily_workspace(
-                self,
-                incoming,
-                direction="outgoing",
-                content=f"[语音] {full_reply}",
+            MainWindow._task_status_update(
+                self, incoming, state="sending", stage="合成并发送语音", kind="语音"
             )
-            self._schedule_personal_learning(incoming, full_reply)
-            self._append_chat("自动回复", f"{incoming.chat_title}: 已发送语音 · {text}")
-            self._finish_auto_message(incoming, result={"reply_kind": "voice"})
+            if source == "api":
+                self._send_auto_voice_api(
+                    incoming,
+                    session,
+                    text,
+                    full_reply,
+                    voice,
+                    voice_speed,
+                    performance,
+                )
+                return
 
-        self._run_future(self.gateway.call(self.account, "SendStreamingVoiceMessage", options), sent)
+            request = {
+                "input": text,
+                "speed": voice_speed,
+                "style": performance.direction(base_style) if performance else base_style,
+            }
+            try:
+                endpoint = local_voice_stream_endpoint(str(
+                    voice.get(
+                        "local_base_url",
+                        voice.get("base_url", "http://127.0.0.1:50001"),
+                    )
+                ))
+            except Exception as exc:
+                self._append_chat("自动聊天", f"本地语音配置无效：{exc}")
+                self._finish_auto_message(incoming, success=False, error=exc)
+                return
+            options = build_options(
+                "SendStreamingVoiceMessage",
+                {"who": incoming.chat_title, "request": request, "endpoint": endpoint},
+            )
+            # Register before the SDK call: preview polling can see the new bubble
+            # before the asynchronous send-success callback runs.
+            self._message_cursor.record_outgoing_voice(incoming.chat_title, text)
+            self._suppress_outgoing_media_preview(incoming.chat_title)
+
+            def sent(result: GatewayResult) -> None:
+                if session != self._auto_chat_session or not result.ok or result.value is False:
+                    self._message_cursor.cancel_outgoing_voice(incoming.chat_title, text)
+                    self._append_chat("自动聊天", f"语音发送失败：{result.error or result.value}")
+                    self._finish_auto_message(
+                        incoming,
+                        success=False,
+                        error=result.error or result.value,
+                    )
+                    return
+                self._auto_chat_last_reply[incoming.chat_title] = time.monotonic()
+                self.memory.add_assistant(incoming.chat_title, full_reply)
+                MainWindow._record_daily_workspace(
+                    self,
+                    incoming,
+                    direction="outgoing",
+                    content=f"[语音] {full_reply}",
+                )
+                self._schedule_personal_learning(incoming, full_reply)
+                self._append_chat("自动回复", f"{incoming.chat_title}: 已发送语音 · {text}")
+                self._finish_auto_message(incoming, result={"reply_kind": "voice"})
+
+            self._run_future(
+                self.gateway.call(self.account, "SendStreamingVoiceMessage", options),
+                sent,
+            )
+
+        if not bool(voice.get("performance_enabled", True)):
+            dispatch(None)
+            return
+
+        def plan_performance() -> GatewayResult:
+            try:
+                plan = self.voice_actor.plan(
+                    self._model_config(),
+                    self._backup_model_config(),
+                    user_message=str(getattr(incoming, "content", "")),
+                    reply_text=text,
+                    direction=base_style,
+                    intensity=intensity,
+                    base_speed=voice_speed,
+                    timeout=self._auto_chat_model_timeout(),
+                )
+                return GatewayResult(True, plan)
+            except Exception as exc:
+                return GatewayResult(False, error=str(exc))
+
+        def planned(result: GatewayResult) -> None:
+            if result.ok and isinstance(result.value, VoicePerformancePlan):
+                performance = result.value
+                operations.event("voice", "performance_planned", {
+                    "segment_count": len(performance.segments),
+                    "intensity": intensity,
+                })
+            else:
+                performance = fallback_voice_performance(
+                    text,
+                    intensity=intensity,
+                    base_speed=voice_speed,
+                )
+                operations.event("voice", "performance_fallback", {
+                    "error": result.error,
+                    "intensity": intensity,
+                })
+                self._append_chat(
+                    "自动聊天", "配音表演规划失败，已使用安全的单段表演"
+                )
+            dispatch(performance)
+
+        self._run_future(self.model_executor.submit(plan_performance), planned)
 
     def _send_auto_voice_api(
         self,
@@ -5097,23 +5246,34 @@ class MainWindow(QMainWindow):
         full_reply: str,
         voice: dict[str, Any],
         voice_speed: float,
+        performance: VoicePerformancePlan | None = None,
     ) -> None:
+        provider = str(voice.get("api_provider", "openai"))
+        base_style = str(voice.get("style", ""))
         config = VoiceApiConfig(
             base_url=str(voice.get("api_base_url", "")),
             model=str(voice.get("api_model", "")),
             api_key=str(voice.get("api_key", "")),
             voice=str(voice.get("api_voice", voice.get("voice", ""))),
-            provider=str(voice.get("api_provider", "openai")),
+            provider=provider,
             speed=voice_speed,
-            instructions=str(voice.get("style", "")),
+            instructions=(
+                performance.direction(base_style)
+                if performance is not None and provider.strip().lower() != "boson"
+                else base_style
+            ),
         )
         def synthesize() -> GatewayResult:
             try:
-                path = synthesize_voice_file(
-                    config,
-                    text,
-                    self.config_path.parent / "data" / "voice-cache",
-                )
+                output_dir = self.config_path.parent / "data" / "voice-cache"
+                if performance is not None and provider.strip().lower() == "boson":
+                    path = synthesize_voice_performance(
+                        config,
+                        performance.higgs_inputs(),
+                        output_dir,
+                    )
+                else:
+                    path = synthesize_voice_file(config, text, output_dir)
                 return GatewayResult(True, path)
             except Exception as exc:
                 return GatewayResult(False, error=str(exc))
@@ -5687,8 +5847,12 @@ class MainWindow(QMainWindow):
 
     def _apply_group_metadata(self, values: list[Any]) -> None:
         groups = sorted({str(name).strip() for name in values if str(name).strip()})
+        checked = MainWindow._selected_auto_chat_targets(self)
         self._auto_chat_groups = set(groups)
         self._group_metadata_ready = True
+        available = list(getattr(self, "_available_auto_chat_targets", ()))
+        if available:
+            MainWindow._populate_auto_chat_targets(self, available, checked)
         current = self.test_target.currentText()
         self.test_target.clear()
         self.test_target.addItems(groups)

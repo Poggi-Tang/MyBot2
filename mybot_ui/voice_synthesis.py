@@ -4,6 +4,7 @@ import json
 import tempfile
 import urllib.error
 import urllib.request
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -180,3 +181,74 @@ def synthesize_voice_file(
     ) as stream:
         stream.write(audio)
         return Path(stream.name)
+
+
+def synthesize_voice_performance(
+    config: VoiceApiConfig,
+    inputs: tuple[str, ...] | list[str],
+    output_dir: Path,
+    *,
+    timeout: float = 120.0,
+) -> Path:
+    segments = tuple(
+        str(value or "").strip()
+        for value in inputs
+        if str(value or "").strip()
+    )
+    if not segments:
+        raise ValueError("配音表演计划不能为空。")
+    if len(segments) == 1:
+        return synthesize_voice_file(
+            config, segments[0], output_dir, timeout=timeout
+        )
+
+    paths: list[Path] = []
+    try:
+        for segment in segments:
+            paths.append(
+                synthesize_voice_file(
+                    config, segment, output_dir, timeout=timeout
+                )
+            )
+        return _merge_wav_files(paths, output_dir)
+    finally:
+        for path in paths:
+            path.unlink(missing_ok=True)
+
+
+def _merge_wav_files(paths: list[Path], output_dir: Path) -> Path:
+    if not paths:
+        raise ValueError("没有可合并的语音片段。")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    temporary = tempfile.NamedTemporaryFile(
+        prefix="mybot-voice-performance-",
+        suffix=".wav",
+        dir=output_dir,
+        delete=False,
+    )
+    merged = Path(temporary.name)
+    temporary.close()
+    expected: tuple[int, int, int, str] | None = None
+    try:
+        with wave.open(str(merged), "wb") as writer:
+            for path in paths:
+                with wave.open(str(path), "rb") as reader:
+                    current = (
+                        reader.getnchannels(),
+                        reader.getsampwidth(),
+                        reader.getframerate(),
+                        reader.getcomptype(),
+                    )
+                    if expected is None:
+                        expected = current
+                        writer.setnchannels(current[0])
+                        writer.setsampwidth(current[1])
+                        writer.setframerate(current[2])
+                        writer.setcomptype(current[3], reader.getcompname())
+                    elif current != expected:
+                        raise RuntimeError("语音片段格式不一致，无法合并。")
+                    writer.writeframes(reader.readframes(reader.getnframes()))
+        return merged
+    except Exception:
+        merged.unlink(missing_ok=True)
+        raise

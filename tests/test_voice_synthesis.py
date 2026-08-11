@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import io
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +16,7 @@ from mybot_ui.voice_synthesis import (
     list_boson_voices,
     local_voice_stream_endpoint,
     synthesize_voice_file,
+    synthesize_voice_performance,
     voice_api_endpoint,
 )
 
@@ -31,6 +34,16 @@ class _Response:
 
     def read(self, _limit: int) -> bytes:
         return self.body
+
+
+def _wav_bytes(frames: bytes) -> bytes:
+    stream = io.BytesIO()
+    with wave.open(stream, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(frames)
+    return stream.getvalue()
 
 
 class VoiceSynthesisTests(unittest.TestCase):
@@ -148,6 +161,41 @@ class VoiceSynthesisTests(unittest.TestCase):
                 },
                 payload,
             )
+
+    def test_boson_performance_synthesizes_and_merges_tagged_segments(self):
+        responses = [
+            _Response(_wav_bytes(b"\x01\x00" * 80)),
+            _Response(_wav_bytes(b"\x02\x00" * 120)),
+        ]
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "mybot_ui.voice_synthesis.urllib.request.urlopen",
+            side_effect=responses,
+        ) as urlopen:
+            path = synthesize_voice_performance(
+                VoiceApiConfig(
+                    base_url="https://api.boson.ai/v1",
+                    model="higgs-tts-3",
+                    api_key="secret",
+                    voice="voice_nora",
+                    provider="boson",
+                ),
+                (
+                    "<|emotion:amusement|>你居然现在才发现？",
+                    "<|emotion:affection|><|prosody:speed_slow|>不过没关系。",
+                ),
+                Path(directory),
+            )
+
+            payloads = [
+                json.loads(call.args[0].data.decode("utf-8"))
+                for call in urlopen.call_args_list
+            ]
+            self.assertEqual(2, len(payloads))
+            self.assertTrue(payloads[0]["input"].startswith("<|emotion:amusement|>"))
+            self.assertIn("<|prosody:speed_slow|>", payloads[1]["input"])
+            with wave.open(str(path), "rb") as audio:
+                self.assertEqual(200, audio.getnframes())
+            self.assertEqual([path], list(Path(directory).iterdir()))
 
     def test_streaming_gateway_options_include_local_endpoint(self):
         options = build_options("SendStreamingVoiceMessage", {
