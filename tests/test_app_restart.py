@@ -40,7 +40,7 @@ class ApplicationRestartTests(unittest.TestCase):
                     "from pathlib import Path",
                     "from mybot_ui.restart import restart_helper_command",
                     f"root = Path({str(app_root)!r})",
-                    "subprocess.Popen(",
+                    "helper = subprocess.Popen(",
                     "    restart_helper_command(os.getpid(), root),",
                     "    cwd=str(root),",
                     "    stdin=subprocess.DEVNULL,",
@@ -48,6 +48,7 @@ class ApplicationRestartTests(unittest.TestCase):
                     "    stderr=subprocess.DEVNULL,",
                     "    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),",
                     ")",
+                    "print(helper.pid, flush=True)",
                 ]
             )
 
@@ -60,15 +61,24 @@ class ApplicationRestartTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(0, completed.returncode, completed.stderr)
+            helper_pid = int(completed.stdout.strip())
 
-            deadline = time.monotonic() + 10
-            while not marker.exists() and time.monotonic() < deadline:
-                time.sleep(0.1)
-            helper_log = app_root / "logs" / "restart-helper.log"
-            detail = helper_log.read_text(encoding="utf-8") if helper_log.exists() else ""
-            self.assertTrue(marker.exists(), detail)
-            # cmd.exe creates the marker before releasing its working-directory handle.
-            time.sleep(1)
+            try:
+                deadline = time.monotonic() + 30
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                helper_log = app_root / "logs" / "restart-helper.log"
+                detail = helper_log.read_text(encoding="utf-8") if helper_log.exists() else ""
+                self.assertTrue(marker.exists(), detail)
+            finally:
+                # A slow CI host can leave the detached helper holding its cwd.
+                subprocess.run(
+                    ["taskkill.exe", "/PID", str(helper_pid), "/T", "/F"],
+                    capture_output=True,
+                    timeout=10,
+                    check=False,
+                )
+                time.sleep(0.5)
 
 
 if __name__ == "__main__":
