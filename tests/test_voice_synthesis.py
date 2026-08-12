@@ -50,7 +50,7 @@ class VoiceSynthesisTests(unittest.TestCase):
     def test_navigation_order_matches_product_structure(self):
         self.assertEqual(
             (
-                "状态",
+                "运行",
                 "知识库",
                 "功能",
                 "设置",

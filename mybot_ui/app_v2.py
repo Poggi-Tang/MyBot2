@@ -149,7 +149,7 @@ DEFAULT_WINDOW_LAYOUT = {
 PENDING_IMAGE_EDIT_TTL_SECONDS = 60 * 60
 STICKER_IN_FLIGHT_TTL_SECONDS = 30.0
 NAVIGATION_TITLES = (
-    "状态", "知识库", "功能", "设置"
+    "运行", "知识库", "功能", "设置"
 )
 DOCK_IDLE_HEIGHT = 48
 DOCK_BUSY_HEIGHT = 64
@@ -811,7 +811,7 @@ class MainWindow(QMainWindow):
         toolbar_layout.addStretch(1)
 
         toolbar_items = (
-            ("●", "状态", "连接、运行状态与测试"),
+            ("运行", "运行", "任务、连接与测试"),
             ("知识库", "知识库", "人物记忆与日期工作区"),
             ("功能", "功能", "功能列表、MCP 与 Skill"),
             ("", "设置", "对话、连接、模型与系统设置"),
@@ -829,12 +829,12 @@ class MainWindow(QMainWindow):
 
         for index, (text, title, tooltip) in enumerate(toolbar_items):
             nav = QPushButton(text)
-            nav.setObjectName("dockStatus" if index == 0 else "dockButton")
+            nav.setObjectName("dockButton")
             nav.setAccessibleName(title)
             nav.setToolTip(tooltip)
             nav.setCheckable(True)
             nav.setFixedHeight(38)
-            nav.setMinimumWidth(50 if index in {0, 3} else 82)
+            nav.setMinimumWidth(62 if index == 0 else 50 if index == 3 else 82)
             if index == 3:
                 nav.setIcon(QIcon(str(settings_icon_path())))
                 nav.setIconSize(QSize(25, 25))
@@ -888,7 +888,7 @@ class MainWindow(QMainWindow):
         )
         settings_page = self._combined_settings_page(conversation_page, system_page)
         pages = (
-            ("MyBot · 状态", status_page),
+            ("MyBot · 运行", status_page),
             ("MyBot · 知识库", knowledge_page),
             ("MyBot · 功能", feature_page),
             ("MyBot · 设置", settings_page),
@@ -3012,10 +3012,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, "dock_connection_status"):
             self.dock_connection_status.setText("● 已连接" if connected else "● 未连接")
             self.dock_connection_status.setStyleSheet(f"color: {connection_color};")
-        if self._nav_buttons:
-            self._nav_buttons[0].setProperty("connected", connected)
-            self._nav_buttons[0].style().unpolish(self._nav_buttons[0])
-            self._nav_buttons[0].style().polish(self._nav_buttons[0])
         self.statusBar().showMessage(message, 5000)
 
     def _account_changed(self, account: str) -> None:
@@ -3204,19 +3200,6 @@ class MainWindow(QMainWindow):
         self.dock_task_strip.setToolTip(
             f"当前 {len(active_items)} 个任务" if active_items else "当前没有任务"
         )
-        has_work = any(item.state in {"working", "sending"} for item in active_items)
-        task_state = "working" if has_work else "queued" if active_items else "idle"
-        if self._nav_buttons:
-            status_button = self._nav_buttons[0]
-            status_button.setProperty("taskState", task_state)
-            status_button.setToolTip({
-                "working": f"处理中 · {len(active_items)} 个任务",
-                "queued": f"排队中 · {len(active_items)} 个任务",
-                "idle": "连接、运行状态与测试",
-            }[task_state])
-            status_button.style().unpolish(status_button)
-            status_button.style().polish(status_button)
-
         visible = bool(active_items)
         height_changed = (not self.dock_task_strip.isHidden()) != visible
         self.dock_task_strip.setVisible(visible)

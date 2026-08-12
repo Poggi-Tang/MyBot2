@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.6.1 Beta 1 - 2026-08-12
+
+### Changed
+
+- Replaced the redundant toolbar status light with a normal `运行` navigation button.
+- The Run button now opens tasks, connection details and tests without changing color for connection or task state.
+- Active and queued task state remains visible exclusively through the dynamic segmented task container below the toolbar.
+
+### Fixed
+
+- Removed duplicate yellow/green state signaling from the first navigation button while preserving task-cell colors and automatic container visibility.
+
 ## 2.6.0 Beta 1 - 2026-08-12
 
 ### Added

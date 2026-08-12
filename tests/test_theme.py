@@ -117,7 +117,10 @@ class ThemeTests(unittest.TestCase):
 
             self.assertFalse(window.dock_task_strip.isHidden())
             self.assertEqual(3, len(window._dock_task_cells))
-            self.assertEqual("working", window._nav_buttons[0].property("taskState"))
+            self.assertIsNone(window._nav_buttons[0].property("taskState"))
+            for cell in window._dock_task_cells.values():
+                self.assertIn("background: #", cell.styleSheet())
+                self.assertNotIn("#07c160", cell.styleSheet())
             self.assertEqual(64, window.height())
 
             for item in window.task_status_pool.snapshots():
@@ -127,7 +130,7 @@ class ThemeTests(unittest.TestCase):
             self.assertTrue(window.dock_task_strip.isHidden())
             self.assertEqual(0, len(window._dock_task_cells))
             self.assertEqual("当前没有任务", window.dock_task_strip.toolTip())
-            self.assertEqual("idle", window._nav_buttons[0].property("taskState"))
+            self.assertIsNone(window._nav_buttons[0].property("taskState"))
             self.assertEqual(48, window.height())
         finally:
             for tool in window._tool_windows:
@@ -136,7 +139,7 @@ class ThemeTests(unittest.TestCase):
             window.setProperty("mybot_explicit_exit", True)
             window.close()
 
-    def test_dock_status_is_green_when_all_tasks_are_queued(self):
+    def test_dock_task_cell_is_green_when_task_is_queued(self):
         window = MainWindow()
         window._dock_timer.stop()
         window._task_status_timer.stop()
@@ -146,9 +149,11 @@ class ThemeTests(unittest.TestCase):
             )
             MainWindow._task_status_enqueue(window, incoming)
 
-            self.assertEqual("queued", window._nav_buttons[0].property("taskState"))
+            self.assertIsNone(window._nav_buttons[0].property("taskState"))
             self.assertFalse(window.dock_task_strip.isHidden())
             self.assertEqual(1, len(window._dock_task_cells))
+            cell = next(iter(window._dock_task_cells.values()))
+            self.assertIn("#07c160", cell.styleSheet())
         finally:
             for tool in window._tool_windows:
                 tool.setProperty("mybot_explicit_exit", True)
@@ -199,9 +204,15 @@ class ThemeTests(unittest.TestCase):
         window._dock_timer.stop()
         try:
             self.assertEqual(
-                ["状态", "知识库", "功能", "设置"],
+                ["运行", "知识库", "功能", "设置"],
                 [button.accessibleName() for button in window._nav_buttons],
             )
+            run_button = window._nav_buttons[0]
+            self.assertEqual("运行", run_button.text())
+            self.assertEqual("dockButton", run_button.objectName())
+            self.assertEqual("任务、连接与测试", run_button.toolTip())
+            self.assertIsNone(run_button.property("connected"))
+            self.assertIsNone(run_button.property("taskState"))
             feature_page = window._tool_windows[2].centralWidget()
             tabs = next(
                 child

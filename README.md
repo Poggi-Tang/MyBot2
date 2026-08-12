@@ -71,7 +71,7 @@ cd MyBot2
 维护者可用以下命令构建与 GitHub Release 同名的 Windows 安装包：
 
 ```powershell
-.\scripts\build-installer.ps1 -Version 2.6.0
+.\scripts\build-installer.ps1 -Version 2.6.1
 ```
 
 产物位于 `dist/`，包括安装程序和对应的 SHA256 文件。GitHub Actions 也会在推送 `v*` 标签后运行同一构建流程并上传这两个 Release Asset。

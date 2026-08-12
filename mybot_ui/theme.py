@@ -41,7 +41,7 @@ def apply_theme(app: QApplication) -> None:
         QPushButton:disabled { background: #f4f4f5; color: #b5b7bc; border-color: #e7e8ea; }
         QPushButton#primary { background: #07c160; border-color: #07c160; color: white; font-weight: 600; }
         QPushButton#primary:hover { background: #06ad56; }
-        QPushButton#dockButton, QPushButton#dockStatus {
+        QPushButton#dockButton {
             border: 0;
             border-radius: 5px;
             padding: 6px 10px;
@@ -49,12 +49,8 @@ def apply_theme(app: QApplication) -> None:
             font-size: 14px;
             font-weight: 600;
         }
-        QPushButton#dockButton:hover, QPushButton#dockStatus:hover { background: #e9eaec; }
-        QPushButton#dockButton:checked, QPushButton#dockStatus:checked { background: #dff6e9; color: #07974b; }
-        QPushButton#dockStatus { color: #a7abb3; font-size: 23px; }
-        QPushButton#dockStatus[connected="true"] { color: #07c160; }
-        QPushButton#dockStatus[taskState="queued"] { color: #07c160; }
-        QPushButton#dockStatus[taskState="working"] { color: #f2b705; }
+        QPushButton#dockButton:hover { background: #e9eaec; }
+        QPushButton#dockButton:checked { background: #dff6e9; color: #07974b; }
         QPushButton#dockAutoChat {
             border: 0;
             border-radius: 5px;
