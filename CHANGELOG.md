@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.6.0 Beta 1 - 2026-08-12
+
+### Added
+
+- Added a unified extension registry for project-local MCP servers and Skills, including JSON/directory import, removal and enable/disable controls.
+- Added switch artwork for extension state controls and project-local synchronization of enabled Skills into the Codex runtime.
+
+### Changed
+
+- Consolidated the feature window into `功能列表 / MCP / Skill`; automatically matched and validated abilities now appear as Skill metadata instead of a separate “快捷能力” concept.
+- The Skill table now shows source type, triggers, validation, usage count and runtime state alongside managed project Skills.
+- Codex CLI command construction now includes only enabled MCP servers and supports imported command- or URL-based MCP configurations.
+- Codex prompts and status text consistently refer to matched Skills.
+
+### Fixed
+
+- Kept feature-page switching as an immediate cached show/hide operation without synchronous registry or window enumeration work.
+- Preserved built-in MCP and Skill protection while allowing imported extensions to be removed safely.
+
 ## 2.5.0 Beta 1 - 2026-08-12
 
 ### Added

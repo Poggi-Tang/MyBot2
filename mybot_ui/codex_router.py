@@ -112,7 +112,7 @@ class CodexTaskRouter:
         return choices[int.from_bytes(digest, "big") % len(choices)]
 
 
-REVIEW_PROMPT = """判断一个已经由 Codex 完成的任务是否值得沉淀为 MyBot 通用快捷能力。
+REVIEW_PROMPT = """判断一个已经由 Codex 完成的任务是否值得沉淀为 MyBot 通用 Skill。
 只有满足全部条件才 reusable=true：同一流程未来至少可用于三个不同请求；通过参数变化即可复用；方法稳定；不依赖当前联系人、私聊内容、密钥、一次性路径或过期实时数值；可以写成 Python 脚本并用离线单元测试验证。
 普通问答、单次修复、特定项目补丁、实时查询、需要人工判断的任务必须为 false。
 只输出 JSON：{"reusable":true或false,"reason":"简短原因","name":"通用能力名称","triggers":["触发短语"]}。"""

@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from mybot_ui.codex_runner import CodexCliRunner, CodexRuntimeConfig, CodexThreadStore
 from mybot_ui.extension_abilities import ExtensionAbilityStore
+from mybot_ui.extension_registry import ExtensionRegistry
 
 
 class CodexRunnerTests(unittest.TestCase):
@@ -128,6 +129,40 @@ class CodexRunnerTests(unittest.TestCase):
             self.assertEqual(root, execute.call_args.kwargs["workspace"])
             self.assertTrue(execute.call_args.kwargs["ephemeral"])
             self.assertIsNone(execute.call_args.kwargs["task_context"])
+
+    def test_command_respects_disabled_and_imported_mcps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exe = root / "codex.exe"
+            proxy = root / "proxy.exe"
+            exe.touch()
+            proxy.touch()
+            registry = ExtensionRegistry(root)
+            registry.set_mcp_enabled("autowx", False)
+            config = root / "mcp.json"
+            config.write_text(json.dumps({
+                "mcpServers": {
+                    "docs": {"command": "docs.exe", "args": ["serve"]}
+                }
+            }), encoding="utf-8")
+            registry.import_mcp(config)
+            runner = CodexCliRunner(
+                CodexRuntimeConfig(exe, proxy, root, "https://example.com", "key", "model"),
+                ExtensionAbilityStore(root / "extensions"),
+                CodexThreadStore(root / "threads.json"),
+            )
+
+            command = runner._command(
+                "http://127.0.0.1:1/v1",
+                root / "last.txt",
+                root,
+                previous_thread="",
+                ephemeral=False,
+            )
+
+            self.assertFalse(any("mcp_servers.autowx" in item for item in command))
+            self.assertTrue(any("mcp_servers.docs.command" in item for item in command))
+            self.assertTrue(any("docs.exe" in item for item in command))
 
     def test_yolo_mode_bypasses_approvals_and_workspace_permissions(self):
         with tempfile.TemporaryDirectory() as directory:

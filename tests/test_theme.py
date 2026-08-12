@@ -4,7 +4,14 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPlainTextEdit, QTabWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QLabel,
+    QPlainTextEdit,
+    QPushButton,
+    QTabWidget,
+)
 
 from mybot_ui import __version__
 from mybot_ui.app_v2 import MainWindow
@@ -180,6 +187,43 @@ class ThemeTests(unittest.TestCase):
             right_margin = window.width() - 1 - settings_right
 
             self.assertLessEqual(abs(left_margin - right_margin), 1)
+        finally:
+            for tool in window._tool_windows:
+                tool.setProperty("mybot_explicit_exit", True)
+                tool.close()
+            window.setProperty("mybot_explicit_exit", True)
+            window.close()
+
+    def test_feature_button_contains_catalog_mcp_and_unified_skills(self):
+        window = MainWindow()
+        window._dock_timer.stop()
+        try:
+            self.assertEqual(
+                ["状态", "知识库", "功能", "设置"],
+                [button.accessibleName() for button in window._nav_buttons],
+            )
+            feature_page = window._tool_windows[2].centralWidget()
+            tabs = next(
+                child
+                for child in feature_page.findChildren(QTabWidget)
+                if [child.tabText(index) for index in range(child.count())]
+                == ["功能列表", "MCP", "Skill"]
+            )
+            self.assertEqual(3, tabs.count())
+            self.assertGreaterEqual(window.mcp_table.rowCount(), 2)
+            self.assertGreaterEqual(window.skill_table.rowCount(), 1)
+            self.assertEqual(9, window.skill_table.columnCount())
+            skill_types = {
+                window.skill_table.item(row, 2).text()
+                for row in range(window.skill_table.rowCount())
+                if window.skill_table.item(row, 2) is not None
+            }
+            self.assertIn("自动匹配", skill_types)
+            for table, toggle_column in ((window.mcp_table, 5), (window.skill_table, 8)):
+                toggle = table.cellWidget(0, toggle_column)
+                self.assertIsInstance(toggle, QPushButton)
+                self.assertFalse(toggle.icon().isNull())
+                self.assertEqual("extensionToggle", toggle.objectName())
         finally:
             for tool in window._tool_windows:
                 tool.setProperty("mybot_explicit_exit", True)

@@ -52,9 +52,7 @@ class VoiceSynthesisTests(unittest.TestCase):
             (
                 "状态",
                 "知识库",
-                "能力",
-                "MCP",
-                "Skill",
+                "功能",
                 "设置",
             ),
             NAVIGATION_TITLES,

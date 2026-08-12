@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Callable
 from urllib.request import Request, urlopen
 
+from .extension_registry import ExtensionRegistry
+
 
 CODEX_PACKAGE_NAME = "codex-package-x86_64-pc-windows-msvc.tar.gz"
 CODEX_RELEASE_BASE_URL = "https://github.com/openai/codex/releases/latest/download"
@@ -62,21 +64,11 @@ class CodexRuntimeManager:
         self.legacy_runtime_dir = self.project_root / "tools" / "codex"
         self.codex_home = self.data_root / "home"
         self.project_skills_dir = self.project_root / ".agents" / "skills"
+        self.extension_registry = ExtensionRegistry(self.project_root)
         self._sync_project_skills()
 
     def _sync_project_skills(self) -> None:
-        bundled = self.project_root / "codex" / "skills"
-        if not bundled.is_dir():
-            return
-        self.project_skills_dir.mkdir(parents=True, exist_ok=True)
-        for source in bundled.iterdir():
-            if source.is_dir() and (source / "SKILL.md").is_file():
-                shutil.copytree(
-                    source,
-                    self.project_skills_dir / source.name,
-                    dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-                )
+        self.extension_registry.sync_skills()
 
     @property
     def active_runtime_dir(self) -> Path:

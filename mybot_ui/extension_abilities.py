@@ -41,11 +41,11 @@ class AbilityMatch:
 
     def prompt(self) -> str:
         return (
-            f"快捷能力：{self.name}（{self.ability_id}）\n"
+            f"匹配的 Skill：{self.name}（{self.ability_id}）\n"
             f"用途：{self.description}\n"
             f"触发词：{'、'.join(self.triggers) or '[无]'}\n"
             f"已验证配方：{self.recipe_path}\n"
-            f"技能包：{self.skill_path}\n"
+            f"Skill 文件：{self.skill_path}\n"
             f"脚本入口：{'、'.join(self.script_paths)}\n"
             "先读取 SKILL.md 和配方并优先运行已验证脚本；只有输入契约不匹配时才重新实现。"
         )

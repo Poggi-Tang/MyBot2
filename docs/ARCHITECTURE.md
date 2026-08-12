@@ -18,7 +18,7 @@
 | `mybot_ui/` | 界面、自动聊天、提示词、模型、记忆、附件、表情与任务编排 |
 | `mybot_mcp/` | Codex 完成任务后回调 MyBot 的 MCP 接口 |
 | `codex/skills/` | Codex 面向 MyBot 工作区的能力说明 |
-| `extensions/` | 已审核、可复用的快捷能力包 |
+| `extensions/` | 已审核、可复用且支持自动匹配的 Skill |
 | `sdk/WeChatAuto4_X/` | 微信 UI Automation 与 WebSocket Server |
 | `sdk/WeAutoCommon/` | SDK 公共组件 |
 | `tests/` | 离线应用测试和显式在线探针 |

@@ -22,6 +22,14 @@ def auto_chat_on_icon_path() -> Path:
     return PROJECT_ROOT / "assets" / "auto-chat-on.svg"
 
 
+def switch_off_icon_path() -> Path:
+    return PROJECT_ROOT / "assets" / "auto-chat-off.svg"
+
+
+def switch_on_icon_path() -> Path:
+    return PROJECT_ROOT / "assets" / "auto-chat-on.svg"
+
+
 def left_arrow_path() -> Path:
     return PROJECT_ROOT / "assets" / "left.svg"
 

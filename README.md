@@ -19,7 +19,7 @@ MyBot2 是面向 Windows 微信 4.x 的桌面自动聊天与自动化测试工�
 
 ### Windows 安装包
 
-普通用户可从 GitHub Releases 下载 `MyBot2-Setup-x.y.z-x64.exe`。安装向导可选择安装目录、内置 Python 和 SDK/快捷能力，也可当场填写主模型 API 或进入 MyBot 后再配置。安装包不附带 Codex CLI；需要时可在“系统配置 → 模型配置 → Codex CLI 扩展”中从 OpenAI 官方下载安装。
+普通用户可从 GitHub Releases 下载 `MyBot2-Setup-x.y.z-x64.exe`。安装向导可选择安装目录、内置 Python、SDK 和 Skill，也可当场填写主模型 API 或进入 MyBot 后再配置。安装包不附带 Codex CLI；需要时可在“系统配置 → 模型配置 → Codex CLI 扩展”中从 OpenAI 官方下载安装。
 
 MyBot 启动后每 10 分钟检查一次 GitHub Release。发现新版本时，界面会显示“可更新”，下载按钮会同时获取安装包及 `.sha256` 文件，校验通过后退出当前版本、覆盖安装并重新启动。手动运行安装包覆盖安装时也会先关闭正在运行的 MyBot。升级安装会保留安装目录中的 `config.json` 和 `data/`。
 
@@ -71,7 +71,7 @@ cd MyBot2
 维护者可用以下命令构建与 GitHub Release 同名的 Windows 安装包：
 
 ```powershell
-.\scripts\build-installer.ps1 -Version 2.5.0
+.\scripts\build-installer.ps1 -Version 2.6.0
 ```
 
 产物位于 `dist/`，包括安装程序和对应的 SHA256 文件。GitHub Actions 也会在推送 `v*` 标签后运行同一构建流程并上传这两个 Release Asset。
@@ -87,7 +87,7 @@ cd MyBot2
 - `mybot_ui/`：桌面界面、自动聊天、模型、记忆、媒体和调度。
 - `mybot_mcp/`：Codex 任务回调 MyBot 的 MCP 服务。
 - `codex/skills/`：Codex 使用的 MyBot 技能。
-- `extensions/`：可审核、可复用的快捷能力包。
+- `extensions/`：可审核、可复用且支持自动匹配的 Skill。
 - `sdk/`：构建所需的 WeChatAuto4_X 和 WeAutoCommon 源码。
 - `tests/`：应用离线测试和显式在线探针。
 - `data/`、`logs/`：首次运行后生成的私人数据，不进入版本库。

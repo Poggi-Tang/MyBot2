@@ -21,24 +21,23 @@ class DockPageSwitchingTests(unittest.TestCase):
         def forbidden(*_args, **_kwargs):
             raise AssertionError("page switch performed synchronous work")
 
-        tools = [QWidget() for _ in range(6)]
+        tools = [QWidget() for _ in range(4)]
         window = SimpleNamespace(
             _tool_windows=tools,
-            _nav_buttons=[QPushButton() for _ in range(6)],
+            _nav_buttons=[QPushButton() for _ in range(4)],
             _active_tool_index=-1,
             _last_tool_rect=DockRect(900, 100, 760, 700),
             _refresh_personal_memory_page=forbidden,
             _refresh_mcp_list=forbidden,
             _refresh_skill_list=forbidden,
-            _refresh_ability_list=forbidden,
             _sync_docked_windows=forbidden,
         )
 
         try:
-            for index in range(6):
+            for index in range(4):
                 MainWindow._select_page(window, index)
-            self.assertEqual(5, window._active_tool_index)
-            self.assertTrue(window._tool_windows[5].isVisible())
+            self.assertEqual(3, window._active_tool_index)
+            self.assertTrue(window._tool_windows[3].isVisible())
         finally:
             for tool in tools:
                 tool.close()

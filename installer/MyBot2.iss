@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "2.5.0"
+  #define MyAppVersion "2.6.0"
 #endif
 #ifndef SourceRoot
   #define SourceRoot ".."
@@ -48,7 +48,7 @@ Name: "custom"; Description: "自定义安装"; Flags: iscustom
 Name: "core"; Description: "MyBot 核心程序与自包含微信 Server"; Types: recommended full custom; Flags: fixed
 Name: "python"; Description: "内置 Python 3.13 运行环境"; Types: full
 Name: "sdkcatalog"; Description: "功能列表与 SDK 开发/完整测试资源"; Types: recommended full
-Name: "abilities"; Description: "快捷能力与配音 Skill"; Types: recommended full
+Name: "abilities"; Description: "Skill 与配音能力"; Types: recommended full
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: unchecked

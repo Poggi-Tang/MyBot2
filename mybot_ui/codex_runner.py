@@ -17,6 +17,7 @@ from typing import Any
 
 from .attachments import IncomingAttachment, MAX_ATTACHMENT_BYTES, stage_task_inputs
 from .extension_abilities import ExtensionAbilityStore
+from .extension_registry import ExtensionRegistry
 from .operation_log import operations
 
 
@@ -507,6 +508,7 @@ class CodexCliRunner:
         previous_thread: str,
         ephemeral: bool,
     ) -> list[str]:
+        registry = ExtensionRegistry(self.config.project_root)
         base = [
             str(self.config.executable),
             "-c", 'model_provider="mybot"',
@@ -517,24 +519,51 @@ class CodexCliRunner:
             "-c", "model_providers.mybot.supports_websockets=false",
             "-c", "disable_response_storage=true",
             "-c", f'model_reasoning_effort="{self.config.model_reasoning_effort}"',
-            "-c", f'mcp_servers.mybot.command="{Path(sys.executable).as_posix()}"',
-            "-c", 'mcp_servers.mybot.args=["-m","mybot_mcp.server"]',
-            "-c", "mcp_servers.mybot.startup_timeout_sec=20",
-            "-c", f"mcp_servers.mybot.tool_timeout_sec={self.config.mcp_tool_timeout_seconds}",
-            "-c", "mcp_servers.mybot.enabled=true",
-            "-c", 'mcp_servers.mybot.default_tools_approval_mode="approve"',
-            "-c", 'mcp_servers.mybot.enabled_tools=["report_progress","register_output_file"]',
-            "-c", 'mcp_servers.mybot.env_vars=["MYBOT_TASK_CONTEXT","MYBOT_TASK_TOKEN","PYTHONPATH","PYTHONUTF8","PYTHONIOENCODING"]',
-            "-c", f'mcp_servers.autowx.command="{Path(sys.executable).as_posix()}"',
-            "-c", 'mcp_servers.autowx.args=["-m","autowx_mcp.server"]',
-            "-c", "mcp_servers.autowx.startup_timeout_sec=20",
-            "-c", f"mcp_servers.autowx.tool_timeout_sec={max(35, self.config.mcp_tool_timeout_seconds)}",
-            "-c", "mcp_servers.autowx.enabled=true",
-            "-c", 'mcp_servers.autowx.default_tools_approval_mode="approve"',
-            "-c", 'mcp_servers.autowx.enabled_tools=["list_functions","get_function_schema","plan_function_call","get_connection_status","connect_gateway","disconnect_gateway","call_sdk_function"]',
-            "-c", 'mcp_servers.autowx.env_vars=["AUTOWX_GATEWAY_URL","AUTOWX_ACCOUNT","MYBOT_TASK_CONTEXT","MYBOT_TASK_TOKEN","PYTHONPATH","PYTHONUTF8","PYTHONIOENCODING"]',
-            "--enable", "code_mode_host",
         ]
+        if registry.mcp_enabled("mybot"):
+            base.extend([
+                "-c", f'mcp_servers.mybot.command="{Path(sys.executable).as_posix()}"',
+                "-c", 'mcp_servers.mybot.args=["-m","mybot_mcp.server"]',
+                "-c", "mcp_servers.mybot.startup_timeout_sec=20",
+                "-c", f"mcp_servers.mybot.tool_timeout_sec={self.config.mcp_tool_timeout_seconds}",
+                "-c", "mcp_servers.mybot.enabled=true",
+                "-c", 'mcp_servers.mybot.default_tools_approval_mode="approve"',
+                "-c", 'mcp_servers.mybot.enabled_tools=["report_progress","register_output_file"]',
+                "-c", 'mcp_servers.mybot.env_vars=["MYBOT_TASK_CONTEXT","MYBOT_TASK_TOKEN","PYTHONPATH","PYTHONUTF8","PYTHONIOENCODING"]',
+            ])
+        if registry.mcp_enabled("autowx"):
+            base.extend([
+                "-c", f'mcp_servers.autowx.command="{Path(sys.executable).as_posix()}"',
+                "-c", 'mcp_servers.autowx.args=["-m","autowx_mcp.server"]',
+                "-c", "mcp_servers.autowx.startup_timeout_sec=20",
+                "-c", f"mcp_servers.autowx.tool_timeout_sec={max(35, self.config.mcp_tool_timeout_seconds)}",
+                "-c", "mcp_servers.autowx.enabled=true",
+                "-c", 'mcp_servers.autowx.default_tools_approval_mode="approve"',
+                "-c", 'mcp_servers.autowx.enabled_tools=["list_functions","get_function_schema","plan_function_call","get_connection_status","connect_gateway","disconnect_gateway","call_sdk_function"]',
+                "-c", 'mcp_servers.autowx.env_vars=["AUTOWX_GATEWAY_URL","AUTOWX_ACCOUNT","MYBOT_TASK_CONTEXT","MYBOT_TASK_TOKEN","PYTHONPATH","PYTHONUTF8","PYTHONIOENCODING"]',
+            ])
+        for server in registry.enabled_mcps():
+            if server["id"] in {"mybot", "autowx"}:
+                continue
+            identifier = server["id"]
+            command = str(server.get("command", ""))
+            url = str(server.get("url", ""))
+            if command:
+                base.extend(["-c", f"mcp_servers.{identifier}.command={json.dumps(command)}"])
+                base.extend([
+                    "-c",
+                    f"mcp_servers.{identifier}.args={json.dumps(server.get('args', []), ensure_ascii=False)}",
+                ])
+            elif url:
+                base.extend(["-c", f"mcp_servers.{identifier}.url={json.dumps(url)}"])
+            environment = server.get("env", {})
+            if isinstance(environment, dict) and environment:
+                base.extend([
+                    "-c",
+                    f"mcp_servers.{identifier}.env={json.dumps(environment, ensure_ascii=False)}",
+                ])
+            base.extend(["-c", f"mcp_servers.{identifier}.enabled=true"])
+        base.extend(["--enable", "code_mode_host"])
         if not self.config.yolo_mode:
             base.extend([
                 "-c", 'approval_policy="never"',
@@ -582,12 +611,12 @@ class CodexCliRunner:
         return "\n\n".join((
             "你是 MyBot 异步调度的 Codex CLI。实际完成任务并验证结果，不要只给建议。",
             "需要直接读取或操作微信时，使用 $autowx-strategyd 并通过 autowx MCP 执行；不得自行绕过 MCP 调用 SDK。MyBot 消息监听器由主程序独占，不得暂停、恢复或重建监听。写操作必须先向当前用户说明准确目标和影响，并取得本次任务中的明确授权。",
-            "任务上下文、附件和匹配能力已经完整注入，不要重复读取通用 MyBot Skill，也不要调用 get_task_context 或 get_capabilities。若明确匹配到快捷能力，只读取该能力自己的 SKILL.md、配方和脚本。只修改完成任务所需的文件并保留已有改动。只有用户在当前任务中明确要求时，才可以执行 git commit、git push、创建远程仓库、PR、Issue 或 Release 等外部写操作；GitHub 操作优先使用本机已认证的 gh CLI。",
+            "任务上下文、附件和匹配 Skill 已经完整注入，不要重复读取通用 MyBot Skill，也不要调用 get_task_context 或 get_capabilities。若明确匹配到 Skill，只读取该 Skill 自己的 SKILL.md、配方和脚本。只修改完成任务所需的文件并保留已有改动。只有用户在当前任务中明确要求时，才可以执行 git commit、git push、创建远程仓库、PR、Issue 或 Release 等外部写操作；GitHub 操作优先使用本机已认证的 gh CLI。",
             "如果任务需要用户刚发的附件，但【任务附件】显示没有输入文件，必须明确说明没有拿到本次原文件并停止。严禁搜索或复用 data/codex/tasks、旧 outputs、其他会话或历史任务中的文件来代替本次附件。",
             "需要交付文件时，只能写入任务指定的 output_dir；调用 mybot.register_output_file 时只传相对于 output_dir 的准确文件名。登记失败或超时不要重试、不要等待，MyBot 会直接扫描 outputs 目录交付。不要把输入原件当作成果回传。",
             "最终回复必须适合微信发送，说明结果和验证，最多 1600 个中文字符，不输出内部推理或冗长日志。",
             "【最近对话】\n" + (context.strip()[-6_000:] or "[无]"),
-            "【匹配的快捷能力】\n" + (abilities or "[无，按常规流程执行]"),
+            "【匹配的 Skill】\n" + (abilities or "[无，按常规流程执行]"),
             "【任务附件】\n" + (attachments or "[无]"),
             "【本次任务】\n" + request,
         ))
@@ -595,12 +624,12 @@ class CodexCliRunner:
     @staticmethod
     def _resume_prompt(request: str, context: str, abilities: str, attachments: str = "") -> str:
         return "\n\n".join((
-            "继续处理同一微信会话的新任务，不重复已完成工作。任务上下文和匹配能力已经注入，不要调用 get_task_context 或 get_capabilities；若匹配到快捷能力，只读取对应能力的 SKILL.md、配方和脚本。",
+            "继续处理同一微信会话的新任务，不重复已完成工作。任务上下文和匹配 Skill 已经注入，不要调用 get_task_context 或 get_capabilities；若匹配到 Skill，只读取对应 Skill 的 SKILL.md、配方和脚本。",
             "需要直接读取或操作微信时，使用 $autowx-strategyd 和 autowx MCP；不得操作 MyBot 消息监听器，写操作必须有当前任务中的明确授权。",
             "只有用户在当前任务中明确要求时，才可以执行 git commit、git push、创建远程仓库、PR、Issue 或 Release 等外部写操作；GitHub 操作优先使用本机已认证的 gh CLI。",
             "如果任务需要用户刚发的附件，但【任务附件】显示没有输入文件，必须明确说明没有拿到本次原文件并停止。严禁搜索或复用 data/codex/tasks、旧 outputs、其他会话或历史任务中的文件来代替本次附件。",
             "【最近对话增量】\n" + (context.strip()[-3_000:] or "[无]"),
-            "【匹配的快捷能力】\n" + (abilities or "[无]"),
+            "【匹配的 Skill】\n" + (abilities or "[无]"),
             "【任务附件】\n" + (attachments or "[无]"),
             "【本次任务】\n" + request,
             "需要交付文件时，只能写入本次任务的 output_dir；调用 mybot.register_output_file 时只传相对文件名。登记失败或超时不要重试、不要等待，MyBot 会扫描 outputs 目录交付。",
@@ -665,7 +694,7 @@ class CodexCliRunner:
         suggested_triggers: tuple[str, ...],
     ) -> str:
         return "\n\n".join((
-            "把下面已完成任务沉淀成通用、离线可验证的 MyBot 快捷能力。当前目录就是唯一可写候选目录，不得访问或修改父目录。",
+            "把下面已完成任务沉淀成通用、离线可验证的 MyBot Skill。当前目录就是唯一可写候选目录，不得访问或修改父目录。",
             "创建 SKILL.md、manifest.json、recipe.md、scripts/<能力>.py、tests/test_<能力>.py。SKILL.md 必须有只包含 name 和 description 的 YAML 前置元数据，并用简洁正文写清适用条件、输入契约、执行步骤和失败处理。脚本使用 argparse，输入必须参数化，不得写入联系人名、原始对话、绝对路径、密钥或实时结果。测试不得联网。",
             "manifest.json 格式：{\"reusable\":true,\"id\":\"lowercase-slug\",\"name\":\"名称\",\"description\":\"用途\",\"triggers\":[\"短语\"]}；name、description 和触发词必须与 SKILL.md 语义一致。",
             "recipe.md 记录适用条件、输入、命令、输出、依赖和失败处理。运行 compileall 与 unittest；只有测试通过才结束。",

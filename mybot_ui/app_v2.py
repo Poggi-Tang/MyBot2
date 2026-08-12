@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -99,6 +100,7 @@ from .codex_router import CodexTaskRouter, ReusableTaskReviewer
 from .codex_runner import CodexCliRunner, CodexResult, CodexRuntimeConfig, CodexThreadStore
 from .codex_install import CodexInstallResult, CodexRuntimeManager, CodexRuntimeStatus
 from .extension_abilities import ExtensionAbilityStore
+from .extension_registry import ExtensionRegistry, ExtensionRegistryError
 from .fast_file_tasks import FastTextTaskExecutor
 from .episodic_memory import EpisodicMemoryStore
 from .daily_workspace import DailyWorkspaceStore
@@ -112,7 +114,13 @@ from .docking import (
 )
 from .personal_memory import PersonalMemoryLearner, PersonalMemoryStore, PersonalProfile, person_id
 from .reply_policy import ReplyPolicy, ReplyProfile
-from .resources import auto_chat_off_icon_path, auto_chat_on_icon_path, settings_icon_path
+from .resources import (
+    auto_chat_off_icon_path,
+    auto_chat_on_icon_path,
+    settings_icon_path,
+    switch_off_icon_path,
+    switch_on_icon_path,
+)
 from .restart import launch_restart_helper, restart_helper_command
 from .realtime_tools import RealtimeToolExecutor, detect_realtime_request
 from .security_policy import SecurityPolicy
@@ -141,7 +149,7 @@ DEFAULT_WINDOW_LAYOUT = {
 PENDING_IMAGE_EDIT_TTL_SECONDS = 60 * 60
 STICKER_IN_FLIGHT_TTL_SECONDS = 30.0
 NAVIGATION_TITLES = (
-    "状态", "知识库", "能力", "MCP", "Skill", "设置"
+    "状态", "知识库", "功能", "设置"
 )
 DOCK_IDLE_HEIGHT = 48
 DOCK_BUSY_HEIGHT = 64
@@ -444,7 +452,7 @@ class MainWindow(QMainWindow):
             | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(530, DOCK_IDLE_HEIGHT)
+        self.setFixedSize(366, DOCK_IDLE_HEIGHT)
         wechat_settings = self.settings.get("wechat", {})
         if not isinstance(wechat_settings, dict):
             wechat_settings = {}
@@ -528,6 +536,7 @@ class MainWindow(QMainWindow):
         )
         self.learning_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mybot-memory")
         self.ability_store = ExtensionAbilityStore(self.config_path.parent / "extensions")
+        self.extension_registry = ExtensionRegistry(self.config_path.parent)
         self.codex_runtime_manager = CodexRuntimeManager(self.config_path.parent)
         self.codex_install_events = CodexInstallEventBridge(self)
         self.codex_install_events.progress.connect(self._codex_install_progress)
@@ -804,9 +813,7 @@ class MainWindow(QMainWindow):
         toolbar_items = (
             ("●", "状态", "连接、运行状态与测试"),
             ("知识库", "知识库", "人物记忆与日期工作区"),
-            ("能力", "能力", "微信 SDK 能力列表"),
-            ("MCP", "MCP", "Codex CLI 可用 MCP"),
-            ("Skill", "Skill", "Codex CLI 可用 Skill"),
+            ("功能", "功能", "功能列表、MCP 与 Skill"),
             ("", "设置", "对话、连接、模型与系统设置"),
         )
 
@@ -827,8 +834,8 @@ class MainWindow(QMainWindow):
             nav.setToolTip(tooltip)
             nav.setCheckable(True)
             nav.setFixedHeight(38)
-            nav.setMinimumWidth(50 if index in {0, 5} else 82)
-            if index == 5:
+            nav.setMinimumWidth(50 if index in {0, 3} else 82)
+            if index == 3:
                 nav.setIcon(QIcon(str(settings_icon_path())))
                 nav.setIconSize(QSize(25, 25))
                 nav.setFixedWidth(50)
@@ -873,14 +880,17 @@ class MainWindow(QMainWindow):
         knowledge_page = self._personal_memory_page()
         capability_page = self._catalog_page()
         mcp_page = self._mcp_page()
-        skill_page = self._skill_page(self._abilities_page())
+        skill_page = self._skill_page()
+        feature_page = self._feature_page(
+            capability_page,
+            mcp_page,
+            skill_page,
+        )
         settings_page = self._combined_settings_page(conversation_page, system_page)
         pages = (
             ("MyBot · 状态", status_page),
             ("MyBot · 知识库", knowledge_page),
-            ("MyBot · 能力", capability_page),
-            ("MyBot · MCP", mcp_page),
-            ("MyBot · Skill", skill_page),
+            ("MyBot · 功能", feature_page),
             ("MyBot · 设置", settings_page),
         )
         for index, (title, page) in enumerate(pages):
@@ -2097,64 +2107,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(label("双击任意功能可将其发送到 AI 执行台；复杂参数可使用：执行 FunctionName {JSON}", "muted"))
         return page
 
-    def _abilities_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(26, 22, 26, 20)
-        layout.setSpacing(14)
-        header = QHBoxLayout()
-        header.addWidget(label("快捷能力", "pageTitle"))
-        header.addWidget(label("已验证技能包会在 Codex 调度前按触发词匹配", "muted"), 0, Qt.AlignBottom)
-        header.addStretch()
-        self.ability_summary = label("", "muted")
-        header.addWidget(self.ability_summary)
-        header.addWidget(button("刷新列表", self._refresh_ability_list))
-        layout.addLayout(header)
-
-        self.ability_table = QTableWidget(0, 7)
-        self.ability_table.setHorizontalHeaderLabels(
-            ("能力名称", "ID", "触发词", "说明", "技能包", "验证", "使用次数")
-        )
-        self.ability_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.ability_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.ability_table.setAlternatingRowColors(True)
-        self.ability_table.setWordWrap(True)
-        self.ability_table.horizontalHeader().setStretchLastSection(True)
-        self.ability_table.setColumnWidth(0, 180)
-        self.ability_table.setColumnWidth(1, 170)
-        self.ability_table.setColumnWidth(2, 260)
-        self.ability_table.setColumnWidth(3, 360)
-        self.ability_table.setColumnWidth(4, 300)
-        self.ability_table.setColumnWidth(5, 170)
-        self.ability_table.setColumnWidth(6, 90)
-        layout.addWidget(self.ability_table, 1)
-        self._refresh_ability_list()
-        return page
-
-    def _refresh_ability_list(self) -> None:
-        if not hasattr(self, "ability_table"):
-            return
-        abilities = self.ability_store.list_abilities()
-        self.ability_table.setRowCount(0)
-        for ability in abilities:
-            row = self.ability_table.rowCount()
-            self.ability_table.insertRow(row)
-            triggers = ability.get("triggers", [])
-            if not isinstance(triggers, list):
-                triggers = [str(triggers)] if triggers else []
-            values = (
-                str(ability.get("name", "")),
-                str(ability.get("id", "")),
-                "、".join(str(value) for value in triggers if str(value).strip()),
-                str(ability.get("description", "")),
-                str(ability.get("skill") or ability.get("recipe") or ""),
-                str(ability.get("validation", "未记录")),
-                str(ability.get("usage_count", 0)),
-            )
-            for column, value in enumerate(values):
-                self.ability_table.setItem(row, column, QTableWidgetItem(value))
-        self.ability_summary.setText(f"已加载 {len(abilities)} 个技能包")
-
     def _test_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -2247,16 +2199,19 @@ class MainWindow(QMainWindow):
         header.addStretch()
         self.mcp_runtime_status = label("", "muted")
         header.addWidget(self.mcp_runtime_status)
+        header.addWidget(button("导入", self._import_mcp))
+        header.addWidget(button("移除", self._remove_selected_mcp))
         header.addWidget(button("刷新", self._refresh_mcp_list))
         layout.addLayout(header)
-        self.mcp_table = QTableWidget(0, 5)
-        self.mcp_table.setHorizontalHeaderLabels(("服务", "工具", "用途", "权限", "状态"))
+        self.mcp_table = QTableWidget(0, 6)
+        self.mcp_table.setHorizontalHeaderLabels(("MCP", "标识", "用途", "来源", "状态", "启用"))
         self.mcp_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.mcp_table.setSelectionMode(QTableWidget.SingleSelection)
         self.mcp_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.mcp_table.setAlternatingRowColors(True)
         self.mcp_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.mcp_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
         layout.addWidget(self.mcp_table, 1)
-        layout.addWidget(label("autowx 已通过任务绑定、写入确认和共享 SDK 调度接入 CLI。", "muted"))
         self._refresh_mcp_list()
         return page
 
@@ -2264,75 +2219,253 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "mcp_table"):
             return
         runtime = self.codex_runtime_manager.status()
-        tools = (
-            ("mybot", "report_progress", "记录长任务进度", "写入任务日志"),
-            ("mybot", "register_output_file", "登记任务交付文件", "任务输出目录"),
-            ("autowx", "list_functions", "检索微信 SDK 能力", "只读"),
-            ("autowx", "get_function_schema", "读取函数参数与风险", "只读"),
-            ("autowx", "plan_function_call", "校验并预览 SDK 调用", "只读"),
-            ("autowx", "get_connection_status", "读取独立网关状态", "只读"),
-            ("autowx", "connect_gateway", "连接本地微信网关", "本机网关"),
-            ("autowx", "disconnect_gateway", "断开独立网关", "本机网关"),
-            ("autowx", "call_sdk_function", "执行任务范围内的 SDK 调用", "写入需确认"),
-        )
-        self.mcp_table.setRowCount(len(tools))
-        state = "可用" if runtime.installed else "等待安装 CLI"
-        for row, values in enumerate(tools):
-            for column, value in enumerate((*values, state)):
-                self.mcp_table.setItem(row, column, QTableWidgetItem(value))
+        servers = self.extension_registry.list_mcps()
+        self.mcp_table.setRowCount(len(servers))
+        for row, server in enumerate(servers):
+            state = "可用" if runtime.installed and server["enabled"] else (
+                "已禁用" if not server["enabled"] else "等待安装 CLI"
+            )
+            source = "内置" if server["builtin"] else "已导入"
+            values = (
+                str(server.get("name", server["id"])),
+                server["id"],
+                str(server.get("description", "")),
+                source,
+                state,
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.UserRole, server["id"])
+                self.mcp_table.setItem(row, column, item)
+            toggle = self._extension_toggle(
+                bool(server["enabled"]),
+                lambda checked=False, identifier=server["id"]: self._set_mcp_enabled(
+                    identifier, checked
+                ),
+            )
+            self.mcp_table.setCellWidget(row, 5, toggle)
         self.mcp_runtime_status.setText(
             f"CLI {runtime.version}" if runtime.installed else "CLI 未安装"
         )
 
-    def _skill_page(self, ability_page: QWidget) -> QWidget:
+    def _skill_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(18, 18, 18, 16)
         layout.setSpacing(12)
         header = QHBoxLayout()
         header.addWidget(label("Skill", "pageTitle"))
-        header.addWidget(label("项目内 CLI 可读取的技能与任务匹配能力", "muted"))
+        header.addWidget(label("项目 Skill 与按对话自动匹配的已验证 Skill", "muted"))
         header.addStretch()
+        self.skill_summary = label("", "muted")
+        header.addWidget(self.skill_summary)
+        header.addWidget(button("导入", self._import_skill))
+        header.addWidget(button("移除", self._remove_selected_skill))
         header.addWidget(button("刷新", self._refresh_skill_list))
         layout.addLayout(header)
-        tabs = QTabWidget()
-        tabs.setDocumentMode(True)
-        built_in = QWidget()
-        built_in_layout = QVBoxLayout(built_in)
-        built_in_layout.setContentsMargins(8, 10, 8, 8)
-        self.skill_table = QTableWidget(0, 4)
-        self.skill_table.setHorizontalHeaderLabels(("Skill", "用途", "来源", "状态"))
+        self.skill_table = QTableWidget(0, 9)
+        self.skill_table.setHorizontalHeaderLabels(
+            ("Skill", "标识", "类型", "触发词", "用途", "验证", "使用次数", "状态", "启用")
+        )
         self.skill_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.skill_table.setSelectionMode(QTableWidget.SingleSelection)
         self.skill_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.skill_table.setAlternatingRowColors(True)
-        self.skill_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        built_in_layout.addWidget(self.skill_table)
-        tabs.addTab(built_in, "项目 Skill")
-        tabs.addTab(ability_page, "任务匹配 Skill")
-        layout.addWidget(tabs, 1)
+        self.skill_table.setWordWrap(True)
+        self.skill_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.skill_table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeToContents)
+        self.skill_table.setColumnWidth(0, 170)
+        self.skill_table.setColumnWidth(1, 160)
+        self.skill_table.setColumnWidth(2, 90)
+        self.skill_table.setColumnWidth(3, 220)
+        self.skill_table.setColumnWidth(5, 150)
+        self.skill_table.setColumnWidth(6, 80)
+        self.skill_table.setColumnWidth(7, 90)
+        layout.addWidget(self.skill_table, 1)
         self._refresh_skill_list()
         return page
 
     def _refresh_skill_list(self) -> None:
         if not hasattr(self, "skill_table"):
             return
-        rows: list[tuple[str, str, str, str]] = []
-        self.codex_runtime_manager._sync_project_skills()
-        skills_root = self.codex_runtime_manager.project_skills_dir
-        for skill_file in sorted(skills_root.glob("*/SKILL.md")):
-            metadata = self._skill_metadata(skill_file)
-            rows.append((
-                metadata.get("name", skill_file.parent.name),
-                metadata.get("description", ""),
-                str(skill_file.relative_to(self.config_path.parent)),
-                "可读取",
-            ))
-        self.skill_table.setRowCount(len(rows))
-        for row, values in enumerate(rows):
+        self.extension_registry.sync_skills()
+        skills = self.extension_registry.list_skills()
+        matched_skills = self.ability_store.list_abilities()
+        self.skill_table.setRowCount(len(skills) + len(matched_skills))
+        for row, skill in enumerate(skills):
+            values = (
+                str(skill["name"]),
+                skill["id"],
+                "内置" if skill["builtin"] else "已导入",
+                "",
+                str(skill["description"]),
+                "",
+                "",
+                "可读取" if skill["enabled"] else "已禁用",
+            )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
+                item.setData(Qt.UserRole, skill["id"])
                 self.skill_table.setItem(row, column, item)
+            toggle = self._extension_toggle(
+                bool(skill["enabled"]),
+                lambda checked=False, identifier=skill["id"]: self._set_skill_enabled(
+                    identifier, checked
+                ),
+            )
+            self.skill_table.setCellWidget(row, 8, toggle)
+
+        for offset, skill in enumerate(matched_skills, start=len(skills)):
+            triggers = skill.get("triggers", [])
+            if not isinstance(triggers, list):
+                triggers = [str(triggers)] if triggers else []
+            values = (
+                str(skill.get("name", "")),
+                str(skill.get("id", "")),
+                "自动匹配",
+                "、".join(str(value) for value in triggers if str(value).strip()),
+                str(skill.get("description", "")),
+                str(skill.get("validation", "未记录")),
+                str(skill.get("usage_count", 0)),
+                "已验证",
+                "由匹配规则管理",
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                if column == 0:
+                    item.setData(Qt.UserRole, "")
+                self.skill_table.setItem(offset, column, item)
+        self.skill_summary.setText(
+            f"项目 {len(skills)} · 自动匹配 {len(matched_skills)}"
+        )
+
+    def _feature_page(
+        self,
+        catalog_page: QWidget,
+        mcp_page: QWidget,
+        skill_page: QWidget,
+    ) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(12, 12, 12, 12)
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        tabs.addTab(catalog_page, "功能列表")
+        tabs.addTab(mcp_page, "MCP")
+        tabs.addTab(skill_page, "Skill")
+        self.feature_tabs = tabs
+        layout.addWidget(tabs, 1)
+        return page
+
+    @staticmethod
+    def _extension_toggle(checked: bool, callback: Callable[[bool], None]) -> QPushButton:
+        toggle = QPushButton()
+        toggle.setObjectName("extensionToggle")
+        toggle.setCheckable(True)
+        toggle.setChecked(checked)
+        toggle.setFixedSize(44, 28)
+        toggle.setIconSize(QSize(36, 18))
+        toggle.setIcon(QIcon(str(switch_on_icon_path() if checked else switch_off_icon_path())))
+        toggle.setToolTip("点击禁用" if checked else "点击启用")
+
+        def changed(value: bool) -> None:
+            toggle.setIcon(QIcon(str(switch_on_icon_path() if value else switch_off_icon_path())))
+            toggle.setToolTip("点击禁用" if value else "点击启用")
+            callback(value)
+
+        toggle.toggled.connect(changed)
+        return toggle
+
+    @staticmethod
+    def _selected_extension_id(table: QTableWidget) -> str:
+        row = table.currentRow()
+        if row < 0:
+            return ""
+        item = table.item(row, 0)
+        return str(item.data(Qt.UserRole) or "") if item is not None else ""
+
+    def _import_mcp(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "导入 MCP 配置",
+            str(self.config_path.parent),
+            "MCP 配置 (*.json);;所有文件 (*)",
+        )
+        if not path:
+            return
+        try:
+            identifiers = self.extension_registry.import_mcp(path)
+            self._refresh_mcp_list()
+            self.statusBar().showMessage(f"已导入 MCP：{', '.join(identifiers)}", 5000)
+        except ExtensionRegistryError as exc:
+            QMessageBox.warning(self, "导入 MCP 失败", str(exc))
+
+    def _remove_selected_mcp(self) -> None:
+        identifier = self._selected_extension_id(self.mcp_table)
+        if not identifier:
+            QMessageBox.information(self, "移除 MCP", "请先选择一个 MCP。")
+            return
+        if QMessageBox.question(
+            self,
+            "移除 MCP",
+            f"确认从项目中移除 MCP“{identifier}”？",
+        ) != QMessageBox.Yes:
+            return
+        try:
+            self.extension_registry.remove_mcp(identifier)
+            self._refresh_mcp_list()
+        except ExtensionRegistryError as exc:
+            QMessageBox.warning(self, "无法移除 MCP", str(exc))
+
+    def _set_mcp_enabled(self, identifier: str, enabled: bool) -> None:
+        try:
+            self.extension_registry.set_mcp_enabled(identifier, enabled)
+            self._refresh_mcp_list()
+        except ExtensionRegistryError as exc:
+            QMessageBox.warning(self, "MCP 状态修改失败", str(exc))
+            self._refresh_mcp_list()
+
+    def _import_skill(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "导入 Skill 目录",
+            str(self.config_path.parent),
+        )
+        if not path:
+            return
+        try:
+            identifier = self.extension_registry.import_skill(path)
+            self._refresh_skill_list()
+            self.statusBar().showMessage(f"已导入 Skill：{identifier}", 5000)
+        except ExtensionRegistryError as exc:
+            QMessageBox.warning(self, "导入 Skill 失败", str(exc))
+
+    def _remove_selected_skill(self) -> None:
+        identifier = self._selected_extension_id(self.skill_table)
+        if not identifier:
+            QMessageBox.information(self, "移除 Skill", "请先选择一个 Skill。")
+            return
+        if QMessageBox.question(
+            self,
+            "移除 Skill",
+            f"确认从项目中移除 Skill“{identifier}”？",
+        ) != QMessageBox.Yes:
+            return
+        try:
+            self.extension_registry.remove_skill(identifier)
+            self._refresh_skill_list()
+        except ExtensionRegistryError as exc:
+            QMessageBox.warning(self, "无法移除 Skill", str(exc))
+
+    def _set_skill_enabled(self, identifier: str, enabled: bool) -> None:
+        try:
+            self.extension_registry.set_skill_enabled(identifier, enabled)
+            self._refresh_skill_list()
+        except ExtensionRegistryError as exc:
+            QMessageBox.warning(self, "Skill 状态修改失败", str(exc))
+            self._refresh_skill_list()
 
     @staticmethod
     def _skill_metadata(path: Path) -> dict[str, str]:
@@ -3651,7 +3784,7 @@ class MainWindow(QMainWindow):
         manager = getattr(self, "codex_runtime_manager", None)
         status = status or (manager.status() if manager is not None else CodexRuntimeStatus(False))
         if status.installed:
-            text = f"已安装 {status.version} · 快捷能力 {self.ability_store.count()} 个"
+            text = f"已安装 {status.version} · 自动匹配 Skill {self.ability_store.count()} 个"
         else:
             text = status.error or "未安装"
         self.codex_status.setText(f"{text} · {suffix}" if suffix else text)
