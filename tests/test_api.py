@@ -160,7 +160,8 @@ class GatewayConnectionTests(unittest.IsolatedAsyncioTestCase):
         lock.acquire()
         script = (
             "import time; from mybot_ui.api import SdkCommandMutex; "
-            "m=SdkCommandMutex(); started=time.monotonic(); m.acquire(); "
+            "m=SdkCommandMutex(); print('ready', flush=True); "
+            "started=time.monotonic(); m.acquire(); "
             "print(time.monotonic()-started, flush=True); m.release(); m.close()"
         )
         process = subprocess.Popen(
@@ -171,14 +172,16 @@ class GatewayConnectionTests(unittest.IsolatedAsyncioTestCase):
             text=True,
         )
         try:
-            await asyncio.sleep(0.25)
+            ready = await asyncio.to_thread(process.stdout.readline)
+            self.assertEqual("ready", ready.strip())
+            await asyncio.sleep(0.2)
             self.assertIsNone(process.poll())
         finally:
             lock.release()
             lock.close()
         stdout, stderr = process.communicate(timeout=5)
         self.assertEqual(0, process.returncode, stderr)
-        self.assertGreaterEqual(float(stdout.strip()), 0.15)
+        self.assertGreaterEqual(float(stdout.strip()), 0.1)
 
 
 if __name__ == "__main__":
