@@ -5,6 +5,15 @@ from mybot_ui.reply_policy import ReplyPolicy
 
 
 class ReplyPolicyTests(unittest.TestCase):
+    def test_default_boundaries_forbid_unverified_realtime_claims(self):
+        policy = ReplyPolicy.from_mapping({})
+
+        boundaries = "\n".join(policy.boundaries)
+        self.assertIn("实时信息", boundaries)
+        self.assertIn("不得猜测数值", boundaries)
+        self.assertIn("不得", boundaries)
+        self.assertIn("声称已经核准", boundaries)
+
     def test_defaults_distinguish_boundaries_style_and_refusal(self):
         policy = ReplyPolicy.from_mapping({})
         messages, matched = policy.system_messages(

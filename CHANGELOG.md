@@ -1,5 +1,44 @@
 # Changelog
 
+## 2.5.0 Beta 1 - 2026-08-12
+
+### Added
+
+- Replaced the monolithic desktop window with a compact six-button toolbar and independent docked windows for status, knowledge, abilities, MCP, Skill and settings.
+- Docked windows follow the visible WeChat frame, dynamically hide when WeChat loses focus, restore with the previous page and keep settings exactly aligned to the WeChat height.
+- Added project-local MCP and Skill visibility, daily personal workspaces, tray controls, administrator security boundaries and the application-managed Codex CLI extension.
+- Added Boson/Higgs voice configuration, voice selection and voice-actor performance planning before synthesis.
+- Added project SVG controls for combo boxes and numeric steppers, plus the supplied application and settings artwork.
+- Added an About page with product, version, release channel, GitHub project and update controls.
+
+### Changed
+
+- Updated the interface to a compact WeChat-style light theme with transparent labels, multiline persona editing and responsive tool-window docking.
+- Page switching now performs only cached window hide/show operations; CLI, memory and Skill refreshes run at initialization or through explicit refresh actions.
+- The system tray menu now has visible hover, pressed, disabled and separator states.
+- Software update controls now live in About instead of Security Management.
+
+### Fixed
+
+- Removed visible docking gaps caused by Windows invisible frame margins and matched tool-window height to the DWM-visible WeChat frame.
+- Fixed foreground visibility behavior across the main WeChat window, WeChat child windows and MyBot tool windows.
+- Fixed group mention recognition, duplicate sticker limits, voice-list loading, local voice assets and Codex project-runtime detection.
+- Fixed combo-box, spin-box and label background rendering inconsistencies across light surfaces.
+- Fixed rapid-message capture, explicit voice routing, automatic Server recovery and cross-process outgoing-message echo suppression.
+
+## 2.4.1 - 2026-08-12
+
+### Added
+
+- The supplied WeChat bubble logo is now used for the application window, taskbar, tray, shortcuts and installer.
+- MyBot stays available in the Windows notification area after its window is closed, with actions to restore, restart or close the application completely.
+- Installed shortcuts now launch the compiled, console-free `MyBot2.exe` entry point instead of `run.cmd`.
+
+### Fixed
+
+- Existing project-local Codex CLI installations under `tools/codex` are recognized when the new `data/codex/runtime` directory has not been installed yet.
+- The compatibility fallback remains restricted to the current MyBot project and never reads a global Codex installation.
+
 ## 2.4.0 - 2026-08-12
 
 ### Changed

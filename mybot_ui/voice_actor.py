@@ -211,8 +211,11 @@ def parse_voice_performance(raw: str, original_text: str) -> VoicePerformancePla
             pause_after=pause_after,
             sfx=sfx,
         ))
-    if _without_whitespace("".join(segment.text for segment in segments)) != _without_whitespace(original_text):
-        raise VoicePerformanceError("配音计划改写了原回复。")
+    planned_text = "".join(segment.text for segment in segments)
+    if _without_whitespace(planned_text) != _without_whitespace(original_text):
+        if _spoken_text_key(planned_text) != _spoken_text_key(original_text):
+            raise VoicePerformanceError("配音计划改写了原回复。")
+        segments = _restore_original_segment_texts(segments, original_text)
     return VoicePerformancePlan(tuple(segments))
 
 
@@ -289,3 +292,48 @@ def _choice(
 
 def _without_whitespace(value: str) -> str:
     return re.sub(r"\s+", "", str(value or ""))
+
+
+def _spoken_text_key(value: str) -> str:
+    # Tolerate punctuation and whitespace added by the director model. They do
+    # not change the spoken wording, and the original text is restored below.
+    return re.sub(r"[\s\W_]+", "", str(value or ""), flags=re.UNICODE).casefold()
+
+
+def _restore_original_segment_texts(
+    segments: list[VoicePerformanceSegment],
+    original_text: str,
+) -> list[VoicePerformanceSegment]:
+    restored: list[VoicePerformanceSegment] = []
+    cursor = 0
+    significant_seen = 0
+    significant_targets: list[int] = []
+    total = 0
+    for segment in segments:
+        total += len(_spoken_text_key(segment.text))
+        significant_targets.append(total)
+    for index, segment in enumerate(segments):
+        if index == len(segments) - 1:
+            end = len(original_text)
+        else:
+            target = significant_targets[index]
+            end = cursor
+            while end < len(original_text) and significant_seen < target:
+                char = original_text[end]
+                end += 1
+                if _spoken_text_key(char):
+                    significant_seen += 1
+            while end < len(original_text) and not _spoken_text_key(original_text[end]):
+                end += 1
+        restored.append(VoicePerformanceSegment(
+            text=original_text[cursor:end],
+            emotion=segment.emotion,
+            style=segment.style,
+            speed=segment.speed,
+            pitch=segment.pitch,
+            expressiveness=segment.expressiveness,
+            pause_after=segment.pause_after,
+            sfx=segment.sfx,
+        ))
+        cursor = end
+    return restored

@@ -37,6 +37,7 @@ class RealtimeToolTests(unittest.TestCase):
         self.assertEqual("北京朝阳", _weather_location("帮我查北京朝阳的天气"))
         self.assertEqual("上海", _weather_location("今天天气怎么样"))
         self.assertEqual("闵行", _weather_location("明天闵行天气怎么样"))
+        self.assertEqual("上海", _weather_location("@圆子\u2005上海今天天气怎么样"))
 
     def test_formats_weather_payload(self):
         payload = {

@@ -65,6 +65,15 @@ class UpdateManagerTests(unittest.TestCase):
             info = UpdateManager(directory, "2.3.0").check()
         self.assertFalse(info.update_available)
 
+    def test_same_version_stable_release_updates_prerelease_install(self):
+        payload = {"tag_name": "v2.5.0", "assets": []}
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "mybot_ui.update_manager.urlopen",
+            return_value=FakeResponse(json.dumps(payload).encode()),
+        ):
+            info = UpdateManager(directory, "2.5.0", prerelease=True).check()
+        self.assertTrue(info.update_available)
+
     def test_download_requires_and_verifies_checksum(self):
         content = b"installer"
         checksum = hashlib.sha256(content).hexdigest()

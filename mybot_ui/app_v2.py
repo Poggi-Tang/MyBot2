@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import re
+import sqlite3
 import time
 import ctypes
 import ctypes.wintypes
@@ -18,8 +19,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QObject, QRect, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
+from PySide6.QtCore import QObject, QRect, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -51,7 +52,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import __version__
+from . import __release_channel__, __version__
 
 from .api import Gateway, GatewayResult
 from .attachments import (
@@ -70,7 +71,8 @@ from .auto_chat import (
     group_reply_trigger,
     incoming_dedupe_feature,
     infer_sticker_query,
-    model_sticker_request,
+    model_reply_action,
+    model_reply_mode_instruction,
     parse_auto_reply_segments,
     requested_action,
     sanitize_auto_reply_text,
@@ -90,6 +92,7 @@ from .chat_engine import (
     parse_listener_event,
 )
 from .operation_log import operations
+from .outgoing_echo import OutgoingEchoJournal, default_outgoing_echo_path
 from .image_understanding import ImageUnderstandingCache, extract_image_understanding
 from .install_options import apply_pending_install_options
 from .codex_router import CodexTaskRouter, ReusableTaskReviewer
@@ -99,8 +102,18 @@ from .extension_abilities import ExtensionAbilityStore
 from .fast_file_tasks import FastTextTaskExecutor
 from .episodic_memory import EpisodicMemoryStore
 from .daily_workspace import DailyWorkspaceStore
+from .docking import (
+    DockRect,
+    DockToolWindow,
+    dock_context_is_foreground,
+    find_wechat_window,
+    toolbar_rect,
+    tool_rect,
+)
 from .personal_memory import PersonalMemoryLearner, PersonalMemoryStore, PersonalProfile, person_id
 from .reply_policy import ReplyPolicy, ReplyProfile
+from .resources import auto_chat_off_icon_path, auto_chat_on_icon_path, settings_icon_path
+from .restart import launch_restart_helper, restart_helper_command
 from .realtime_tools import RealtimeToolExecutor, detect_realtime_request
 from .security_policy import SecurityPolicy
 from .task_status import ACTIVE_TASK_STATES, TaskStatusPool
@@ -128,8 +141,10 @@ DEFAULT_WINDOW_LAYOUT = {
 PENDING_IMAGE_EDIT_TTL_SECONDS = 60 * 60
 STICKER_IN_FLIGHT_TTL_SECONDS = 30.0
 NAVIGATION_TITLES = (
-    "对话配置", "记忆管理", "功能列表", "快捷能力", "测试模块", "系统配置"
+    "状态", "知识库", "能力", "MCP", "Skill", "设置"
 )
+DOCK_IDLE_HEIGHT = 48
+DOCK_BUSY_HEIGHT = 64
 VOICE_API_PRESETS = (
     "default", "Cherry", "Serena", "Ethan", "Chelsie", "Momo", "Vivian", "Moon", "Maia",
     "Kai", "Nofish", "Bella", "Jennifer", "Ryan", "Katerina", "Aiden", "Neil",
@@ -197,7 +212,7 @@ def label(text: str, object_name: str = "") -> QLabel:
 def card(title: str) -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
     frame.setObjectName("card")
-    frame.setStyleSheet("QFrame#card { background: #141d28; border: 1px solid #253241; border-radius: 8px; }")
+    frame.setStyleSheet("QFrame#card { background: #ffffff; border: 1px solid #e5e6eb; border-radius: 6px; }")
     layout = QVBoxLayout(frame)
     layout.setContentsMargins(18, 15, 18, 15)
     layout.setSpacing(10)
@@ -377,7 +392,11 @@ class MainWindow(QMainWindow):
             self._install_options_message = apply_pending_install_options(self.config_path.parent)
         except Exception as exc:
             self._install_options_message = f"安装选项应用失败：{exc}"
-        self.update_manager = UpdateManager(self.config_path.parent, __version__)
+        self.update_manager = UpdateManager(
+            self.config_path.parent,
+            __version__,
+            prerelease=__release_channel__ != "stable",
+        )
         self._latest_update: UpdateInfo | None = None
         self._update_check_in_progress = False
         self._update_download_in_progress = False
@@ -418,9 +437,14 @@ class MainWindow(QMainWindow):
         self._auto_selection_restored = False
         self._group_metadata_refresh_in_progress = False
         self._group_metadata_refresh_pending = False
-        self.setWindowTitle(f"MyBot {__version__} · AI WeChat Operator")
-        self.resize(1360, 860)
-        self.setMinimumSize(1050, 680)
+        self.setWindowTitle(f"MyBot {__version__}")
+        self.setWindowFlags(
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(530, DOCK_IDLE_HEIGHT)
         wechat_settings = self.settings.get("wechat", {})
         if not isinstance(wechat_settings, dict):
             wechat_settings = {}
@@ -536,6 +560,8 @@ class MainWindow(QMainWindow):
         self.auto_chat_running = False
         self._auto_start_attempted = False
         self._message_cursor = ListenerMessageCursor()
+        self._outgoing_echo_journal = OutgoingEchoJournal(default_outgoing_echo_path())
+        self._outgoing_echo_cursor = 0
         self._auto_chat_seen: set[str] = set()
         self._auto_chat_seen_order: deque[str] = deque(maxlen=2000)
         self._auto_chat_last_reply: dict[str, float] = {}
@@ -587,6 +613,15 @@ class MainWindow(QMainWindow):
         self._global_hotkey_registered = False
         self._pages = QStackedWidget()
         self._nav_buttons: list[QPushButton] = []
+        self._tool_windows: list[DockToolWindow] = []
+        self._active_tool_index = -1
+        self._last_wechat_handle = 0
+        self._last_tool_rect: DockRect | None = None
+        self._dock_auto_hidden = False
+        self._dock_visibility_transition = False
+        self._dock_task_signature: tuple[str, ...] = ()
+        self._dock_task_cells: dict[str, QFrame] = {}
+        self._dock_task_pulse = False
         self._test_queue: list[tuple[str, dict[str, Any]]] = []
         self._test_total = 0
         self._test_index = 0
@@ -594,6 +629,10 @@ class MainWindow(QMainWindow):
         self._test_span = None
         self._build_shell()
         self._build_pages()
+        self._dock_timer = QTimer(self)
+        self._dock_timer.setInterval(700)
+        self._dock_timer.timeout.connect(self._sync_docked_windows)
+        self._dock_timer.start()
         self._task_status_timer = QTimer(self)
         self._task_status_timer.setInterval(500)
         self._task_status_timer.timeout.connect(self._refresh_task_status_view)
@@ -603,7 +642,6 @@ class MainWindow(QMainWindow):
         self._update_timer.timeout.connect(self._check_for_updates)
         self._update_timer.start()
         self._install_stop_shortcut()
-        self._select_page(0)
         self._append_chat("系统", "已加载自动聊天、功能目录和快速测试模块。")
         if self._config_load_error:
             self._append_chat("配置", f"读取配置失败，已使用默认值：{self._config_load_error}")
@@ -612,7 +650,7 @@ class MainWindow(QMainWindow):
         if self._install_options_message:
             self._append_chat("安装", self._install_options_message)
         self._window_layout_ready = True
-        QTimer.singleShot(0, self._restore_window_layout)
+        QTimer.singleShot(0, self._sync_docked_windows)
         QTimer.singleShot(350, self._connect)
         QTimer.singleShot(5000, self._check_for_updates)
 
@@ -634,46 +672,13 @@ class MainWindow(QMainWindow):
         return os.environ.get(env_name, default) if env_name else default
 
     def _restore_window_layout(self) -> None:
-        layout = normalize_window_layout(self.settings)
-        target = QRect(layout["x"], layout["y"], layout["width"], layout["height"])
-        screens = self.screen().virtualSiblings() if self.screen() else []
-        if screens and not any(screen.availableGeometry().intersects(target) for screen in screens):
-            available = screens[0].availableGeometry()
-            layout["x"] = available.x() + max(0, (available.width() - layout["width"]) // 2)
-            layout["y"] = available.y() + max(0, (available.height() - layout["height"]) // 2)
-        if os.name == "nt":
-            flags = 0x0004 | 0x0010  # SWP_NOZORDER | SWP_NOACTIVATE
-            applied = ctypes.windll.user32.SetWindowPos(
-                int(self.winId()),
-                0,
-                layout["x"],
-                layout["y"],
-                layout["width"],
-                layout["height"],
-                flags,
-            )
-            if applied:
-                return
-        self.setGeometry(target)
+        self._sync_docked_windows()
 
     def _current_window_layout(self) -> dict[str, int] | None:
-        if self.isMinimized() or self.isMaximized():
-            return None
-        if os.name == "nt":
-            rect = ctypes.wintypes.RECT()
-            if ctypes.windll.user32.GetWindowRect(int(self.winId()), ctypes.byref(rect)):
-                return {
-                    "x": rect.left,
-                    "y": rect.top,
-                    "width": rect.right - rect.left,
-                    "height": rect.bottom - rect.top,
-                }
-        rect = self.frameGeometry()
-        return {"x": rect.x(), "y": rect.y(), "width": rect.width(), "height": rect.height()}
+        return None
 
     def _schedule_window_layout_save(self) -> None:
-        if self._window_layout_ready and self.isVisible() and not self.isMaximized():
-            self._window_layout_timer.start()
+        return
 
     def moveEvent(self, event) -> None:  # noqa: N802
         super().moveEvent(event)
@@ -682,6 +687,24 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._schedule_window_layout_save()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        if not self._dock_visibility_transition:
+            self._dock_auto_hidden = False
+        for window in getattr(self, "_tool_windows", ()):
+            window.hide()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._dock_visibility_transition:
+            self._dock_auto_hidden = False
+        QTimer.singleShot(0, self._restore_active_tool_window)
+
+    def _restore_active_tool_window(self) -> None:
+        self._sync_docked_windows()
+        if 0 <= self._active_tool_index < len(self._tool_windows):
+            self._tool_windows[self._active_tool_index].show()
 
     def _save_window_layout(self) -> None:
         layout = self._current_window_layout()
@@ -704,6 +727,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._window_layout_timer.stop()
+        if hasattr(self, "_dock_timer"):
+            self._dock_timer.stop()
         self._auto_selection_save_timer.stop()
         self._auto_listener_sync_timer.stop()
         self._task_status_timer.stop()
@@ -729,6 +754,9 @@ class MainWindow(QMainWindow):
         self.learning_executor.shutdown(wait=False, cancel_futures=True)
         self.codex_executor.shutdown(wait=False, cancel_futures=True)
         self.ability_executor.shutdown(wait=False, cancel_futures=True)
+        for window in getattr(self, "_tool_windows", ()):
+            window.setProperty("mybot_explicit_exit", True)
+            window.close()
         event.accept()
 
     def _install_stop_shortcut(self) -> None:
@@ -759,72 +787,113 @@ class MainWindow(QMainWindow):
             self._append_chat("自动聊天", "当前未运行")
 
     def _build_shell(self) -> None:
-        root = QWidget()
-        root_layout = QHBoxLayout(root)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+        root = QFrame()
+        root.setObjectName("dockBar")
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(6, 4, 6, 4)
+        root_layout.setSpacing(2)
         self.setCentralWidget(root)
+        self.statusBar().hide()
 
-        sidebar = QFrame()
-        sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(225)
-        side = QVBoxLayout(sidebar)
-        side.setContentsMargins(18, 22, 18, 18)
-        side.addWidget(label(f"MyBot {__version__}", "brand"))
-        side.addWidget(label("AI WECHAT OPERATOR", "muted"))
-        side.addSpacing(18)
-        for index, title in enumerate(NAVIGATION_TITLES):
-            nav = QPushButton(f"  {title}")
-            nav.setObjectName("nav")
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.setSpacing(4)
+        root_layout.addLayout(toolbar_layout)
+        toolbar_layout.addStretch(1)
+
+        toolbar_items = (
+            ("●", "状态", "连接、运行状态与测试"),
+            ("知识库", "知识库", "人物记忆与日期工作区"),
+            ("能力", "能力", "微信 SDK 能力列表"),
+            ("MCP", "MCP", "Codex CLI 可用 MCP"),
+            ("Skill", "Skill", "Codex CLI 可用 Skill"),
+            ("", "设置", "对话、连接、模型与系统设置"),
+        )
+
+        self.dock_auto_chat_toggle = QPushButton()
+        self.dock_auto_chat_toggle.setObjectName("dockAutoChat")
+        self.dock_auto_chat_toggle.setAccessibleName("自动对话快捷开关")
+        self.dock_auto_chat_toggle.setToolTip("启动自动对话")
+        self.dock_auto_chat_toggle.setFixedSize(46, 38)
+        self.dock_auto_chat_toggle.setIcon(QIcon(str(auto_chat_off_icon_path())))
+        self.dock_auto_chat_toggle.setIconSize(QSize(32, 16))
+        self.dock_auto_chat_toggle.clicked.connect(self._toggle_auto_chat_from_dock)
+        toolbar_layout.addWidget(self.dock_auto_chat_toggle)
+
+        for index, (text, title, tooltip) in enumerate(toolbar_items):
+            nav = QPushButton(text)
+            nav.setObjectName("dockStatus" if index == 0 else "dockButton")
+            nav.setAccessibleName(title)
+            nav.setToolTip(tooltip)
             nav.setCheckable(True)
+            nav.setFixedHeight(38)
+            nav.setMinimumWidth(50 if index in {0, 5} else 82)
+            if index == 5:
+                nav.setIcon(QIcon(str(settings_icon_path())))
+                nav.setIconSize(QSize(25, 25))
+                nav.setFixedWidth(50)
             nav.clicked.connect(lambda checked=False, i=index: self._select_page(i))
             self._nav_buttons.append(nav)
-            side.addWidget(nav)
-        side.addStretch()
-        side.addWidget(label("连接状态", "muted"))
-        self.sidebar_status = label("● 未连接", "muted")
-        self.sidebar_status.setStyleSheet("color: #eab34c;")
-        side.addWidget(self.sidebar_status)
-        root_layout.addWidget(sidebar)
+            toolbar_layout.addWidget(nav)
 
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        topbar = QFrame()
-        topbar.setObjectName("topbar")
-        top = QHBoxLayout(topbar)
-        top.setContentsMargins(22, 12, 22, 12)
-        top.addStretch()
+        toolbar_layout.addStretch(1)
+
+        self.dock_task_strip = QFrame()
+        self.dock_task_strip.setObjectName("dockTaskStrip")
+        self.dock_task_strip.setFixedHeight(12)
+        self.dock_task_layout = QHBoxLayout(self.dock_task_strip)
+        self.dock_task_layout.setContentsMargins(2, 2, 2, 2)
+        self.dock_task_layout.setSpacing(2)
+        self.dock_task_strip.setToolTip("当前没有任务")
+        self.dock_task_strip.setVisible(False)
+        root_layout.addWidget(self.dock_task_strip)
+
+        self.sidebar_status = label("未连接")
+        self.sidebar_status.setVisible(False)
+
+        # These controls are inserted into the Settings tool window after all
+        # content pages have been built.
         self.account_combo = QComboBox()
         self.account_combo.setMinimumWidth(150)
         self.account_combo.currentTextChanged.connect(self._account_changed)
-        top.addWidget(self.account_combo)
         self.uri_input = QLineEdit(str(self._config_value("wechat", "websocket_url", "MYBOT_WEBSOCKET_URL", "ws://127.0.0.1:5177/ws")))
         self.uri_input.setMinimumWidth(245)
-        top.addWidget(self.uri_input)
         self.connect_button = button("连接", self._connect, True)
-        top.addWidget(self.connect_button)
         self.restart_server_button = button("重启 Server", self._restart_server)
         self.restart_server_button.setToolTip("停止并重新启动 WeChatAuto4_X WebSocket Server，然后自动重连")
-        top.addWidget(self.restart_server_button)
         self.restart_app_button = button("重启软件", self._restart_application)
         self.restart_app_button.setToolTip("保存当前状态，关闭并重新启动 MyBot 2.0；Server 保持运行")
-        top.addWidget(self.restart_app_button)
         self.update_button = button("", self._start_application_update, True)
         self.update_button.setVisible(False)
-        top.addWidget(self.update_button)
-        content_layout.addWidget(topbar)
-        content_layout.addWidget(self._pages, 1)
-        root_layout.addWidget(content, 1)
-        self.statusBar().showMessage("就绪")
 
     def _build_pages(self) -> None:
-        self._pages.addWidget(self._auto_chat_page())
-        self._pages.addWidget(self._personal_memory_page())
-        self._pages.addWidget(self._catalog_page())
-        self._pages.addWidget(self._abilities_page())
-        self._pages.addWidget(self._test_page())
-        self._pages.addWidget(self._settings_page())
+        conversation_page = self._auto_chat_page()
+        system_page = self._settings_page()
+        status_page = self._status_page(self._test_page())
+        knowledge_page = self._personal_memory_page()
+        capability_page = self._catalog_page()
+        mcp_page = self._mcp_page()
+        skill_page = self._skill_page(self._abilities_page())
+        settings_page = self._combined_settings_page(conversation_page, system_page)
+        pages = (
+            ("MyBot · 状态", status_page),
+            ("MyBot · 知识库", knowledge_page),
+            ("MyBot · 能力", capability_page),
+            ("MyBot · MCP", mcp_page),
+            ("MyBot · Skill", skill_page),
+            ("MyBot · 设置", settings_page),
+        )
+        for index, (title, page) in enumerate(pages):
+            window = DockToolWindow(
+                title,
+                lambda i=index: self._tool_window_hidden(i),
+                self,
+            )
+            window.setWindowIcon(self.windowIcon())
+            window.setCentralWidget(page)
+            window.resize(760, 900)
+            window.setMinimumSize(520, 240)
+            self._tool_windows.append(window)
 
     def _auto_chat_page(self) -> QWidget:
         page = QWidget()
@@ -879,6 +948,7 @@ class MainWindow(QMainWindow):
 
         activity_tabs = QTabWidget()
         activity_tabs.setDocumentMode(True)
+        self.activity_tabs = activity_tabs
 
         work_page = QWidget()
         work_layout = QVBoxLayout(work_page)
@@ -968,9 +1038,13 @@ class MainWindow(QMainWindow):
 
         reply_card, reply_box = card("聊天与回复策略")
         reply_grid = QGridLayout()
-        self.model_system_prompt = QLineEdit(str(self._config_value(
+        self.model_system_prompt = QPlainTextEdit(str(self._config_value(
             "chat", "system_prompt", "", "你是一个自然、简洁、有帮助的微信聊天助手。"
         )))
+        self.model_system_prompt.setFixedHeight(112)
+        self.model_system_prompt.setPlaceholderText(
+            "描述 AI 的身份、性格、说话方式、关系定位和需要长期遵守的行为。"
+        )
         self.reply_keyword = QLineEdit(str(self._config_value("chat", "reply_keyword", "", "")))
         self.reply_keyword.setPlaceholderText("留空：回复所有文本；填写：只回复包含关键词的消息")
         self.reply_cooldown = QSpinBox()
@@ -991,7 +1065,7 @@ class MainWindow(QMainWindow):
         self.group_reply_mentions_only.setToolTip(
             "未触发的群消息仍会进入当前会话上下文，但不会创建回复任务"
         )
-        reply_grid.addWidget(label("基础人设", "muted"), 0, 0)
+        reply_grid.addWidget(label("基础人设", "muted"), 0, 0, Qt.AlignTop)
         reply_grid.addWidget(self.model_system_prompt, 0, 1, 1, 5)
         reply_grid.addWidget(label("触发关键词", "muted"), 1, 0)
         reply_grid.addWidget(self.reply_keyword, 1, 1, 1, 2)
@@ -1310,6 +1384,38 @@ class MainWindow(QMainWindow):
         self.security_admins.setPlaceholderText("每行一个联系人名称")
         security_box.addWidget(self.security_admins)
         security_layout.addWidget(security_card)
+        security_layout.addStretch()
+        tabs.addTab(security_scroll, "安全管理")
+
+        about_scroll = QScrollArea()
+        about_scroll.setWidgetResizable(True)
+        about_scroll.setFrameShape(QFrame.NoFrame)
+        about_content = QWidget()
+        about_layout = QVBoxLayout(about_content)
+        about_layout.setContentsMargins(10, 14, 10, 14)
+        about_layout.setSpacing(14)
+        about_scroll.setWidget(about_content)
+
+        product_card, product_box = card("关于 MyBot2")
+        product_grid = QGridLayout()
+        product_grid.addWidget(label("产品", "muted"), 0, 0)
+        product_grid.addWidget(label("MyBot2"), 0, 1)
+        product_grid.addWidget(label("当前版本", "muted"), 1, 0)
+        self.about_version_label = label(__version__)
+        product_grid.addWidget(self.about_version_label, 1, 1)
+        product_grid.addWidget(label("发布通道", "muted"), 2, 0)
+        release_channel_text = "稳定版" if __release_channel__ == "stable" else "Beta 测试版"
+        product_grid.addWidget(label(release_channel_text), 2, 1)
+        product_grid.addWidget(label("项目地址", "muted"), 3, 0)
+        project_button = button(
+            "github.com/Poggi-Tang/MyBot2",
+            lambda: QDesktopServices.openUrl(QUrl("https://github.com/Poggi-Tang/MyBot2")),
+        )
+        project_button.setToolTip("在浏览器中打开 MyBot2 GitHub 项目")
+        product_grid.addWidget(project_button, 3, 1)
+        product_grid.setColumnStretch(1, 1)
+        product_box.addLayout(product_grid)
+        about_layout.addWidget(product_card)
 
         update_card, update_box = card("软件更新")
         update_header = QHBoxLayout()
@@ -1330,9 +1436,9 @@ class MainWindow(QMainWindow):
         self.update_progress.setValue(0)
         self.update_progress.setVisible(False)
         update_box.addWidget(self.update_progress)
-        security_layout.addWidget(update_card)
-        security_layout.addStretch()
-        tabs.addTab(security_scroll, "安全管理")
+        about_layout.addWidget(update_card)
+        about_layout.addStretch()
+        tabs.addTab(about_scroll, "关于")
 
         save_actions = QHBoxLayout()
         save_actions.addStretch()
@@ -2100,12 +2206,263 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.test_table, 1)
         return page
 
+    def _status_page(self, test_page: QWidget) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 18, 18, 16)
+        layout.setSpacing(12)
+        header = QHBoxLayout()
+        header.addWidget(label("运行状态", "pageTitle"))
+        header.addStretch()
+        self.dock_connection_status = label("● 未连接", "connectionStatus")
+        header.addWidget(self.dock_connection_status)
+        layout.addLayout(header)
+
+        summary = QFrame()
+        summary.setObjectName("statusSummary")
+        summary_layout = QHBoxLayout(summary)
+        summary_layout.setContentsMargins(14, 10, 14, 10)
+        self.dock_account_status = label("未锁定账号", "sectionTitle")
+        self.dock_work_status = label("自动聊天未运行", "muted")
+        summary_layout.addWidget(self.dock_account_status)
+        summary_layout.addStretch()
+        summary_layout.addWidget(self.dock_work_status)
+        layout.addWidget(summary)
+
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        tabs.addTab(self.activity_tabs, "工作与日志")
+        tabs.addTab(test_page, "功能测试")
+        layout.addWidget(tabs, 1)
+        return page
+
+    def _mcp_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(14)
+        header = QHBoxLayout()
+        header.addWidget(label("MCP", "pageTitle"))
+        header.addWidget(label("当前 Codex CLI 调度实际启用的服务与工具", "muted"))
+        header.addStretch()
+        self.mcp_runtime_status = label("", "muted")
+        header.addWidget(self.mcp_runtime_status)
+        header.addWidget(button("刷新", self._refresh_mcp_list))
+        layout.addLayout(header)
+        self.mcp_table = QTableWidget(0, 5)
+        self.mcp_table.setHorizontalHeaderLabels(("服务", "工具", "用途", "权限", "状态"))
+        self.mcp_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.mcp_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.mcp_table.setAlternatingRowColors(True)
+        self.mcp_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        layout.addWidget(self.mcp_table, 1)
+        layout.addWidget(label("autowx 已通过任务绑定、写入确认和共享 SDK 调度接入 CLI。", "muted"))
+        self._refresh_mcp_list()
+        return page
+
+    def _refresh_mcp_list(self) -> None:
+        if not hasattr(self, "mcp_table"):
+            return
+        runtime = self.codex_runtime_manager.status()
+        tools = (
+            ("mybot", "report_progress", "记录长任务进度", "写入任务日志"),
+            ("mybot", "register_output_file", "登记任务交付文件", "任务输出目录"),
+            ("autowx", "list_functions", "检索微信 SDK 能力", "只读"),
+            ("autowx", "get_function_schema", "读取函数参数与风险", "只读"),
+            ("autowx", "plan_function_call", "校验并预览 SDK 调用", "只读"),
+            ("autowx", "get_connection_status", "读取独立网关状态", "只读"),
+            ("autowx", "connect_gateway", "连接本地微信网关", "本机网关"),
+            ("autowx", "disconnect_gateway", "断开独立网关", "本机网关"),
+            ("autowx", "call_sdk_function", "执行任务范围内的 SDK 调用", "写入需确认"),
+        )
+        self.mcp_table.setRowCount(len(tools))
+        state = "可用" if runtime.installed else "等待安装 CLI"
+        for row, values in enumerate(tools):
+            for column, value in enumerate((*values, state)):
+                self.mcp_table.setItem(row, column, QTableWidgetItem(value))
+        self.mcp_runtime_status.setText(
+            f"CLI {runtime.version}" if runtime.installed else "CLI 未安装"
+        )
+
+    def _skill_page(self, ability_page: QWidget) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 18, 18, 16)
+        layout.setSpacing(12)
+        header = QHBoxLayout()
+        header.addWidget(label("Skill", "pageTitle"))
+        header.addWidget(label("项目内 CLI 可读取的技能与任务匹配能力", "muted"))
+        header.addStretch()
+        header.addWidget(button("刷新", self._refresh_skill_list))
+        layout.addLayout(header)
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        built_in = QWidget()
+        built_in_layout = QVBoxLayout(built_in)
+        built_in_layout.setContentsMargins(8, 10, 8, 8)
+        self.skill_table = QTableWidget(0, 4)
+        self.skill_table.setHorizontalHeaderLabels(("Skill", "用途", "来源", "状态"))
+        self.skill_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.skill_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.skill_table.setAlternatingRowColors(True)
+        self.skill_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        built_in_layout.addWidget(self.skill_table)
+        tabs.addTab(built_in, "项目 Skill")
+        tabs.addTab(ability_page, "任务匹配 Skill")
+        layout.addWidget(tabs, 1)
+        self._refresh_skill_list()
+        return page
+
+    def _refresh_skill_list(self) -> None:
+        if not hasattr(self, "skill_table"):
+            return
+        rows: list[tuple[str, str, str, str]] = []
+        self.codex_runtime_manager._sync_project_skills()
+        skills_root = self.codex_runtime_manager.project_skills_dir
+        for skill_file in sorted(skills_root.glob("*/SKILL.md")):
+            metadata = self._skill_metadata(skill_file)
+            rows.append((
+                metadata.get("name", skill_file.parent.name),
+                metadata.get("description", ""),
+                str(skill_file.relative_to(self.config_path.parent)),
+                "可读取",
+            ))
+        self.skill_table.setRowCount(len(rows))
+        for row, values in enumerate(rows):
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                self.skill_table.setItem(row, column, item)
+
+    @staticmethod
+    def _skill_metadata(path: Path) -> dict[str, str]:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return {}
+        if not lines or lines[0].strip() != "---":
+            return {}
+        result: dict[str, str] = {}
+        for line in lines[1:]:
+            if line.strip() == "---":
+                break
+            key, separator, value = line.partition(":")
+            if separator and key.strip() in {"name", "description"}:
+                result[key.strip()] = value.strip().strip("'\"")
+        return result
+
+    def _combined_settings_page(
+        self,
+        conversation_page: QWidget,
+        system_page: QWidget,
+    ) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        connection = QFrame()
+        connection.setObjectName("connectionBar")
+        connection_layout = QGridLayout(connection)
+        connection_layout.setContentsMargins(12, 10, 12, 10)
+        connection_layout.addWidget(label("锁定账号", "muted"), 0, 0)
+        connection_layout.addWidget(self.account_combo, 0, 1)
+        connection_layout.addWidget(label("Server", "muted"), 0, 2)
+        connection_layout.addWidget(self.uri_input, 0, 3)
+        connection_layout.addWidget(self.connect_button, 0, 4)
+        connection_layout.addWidget(self.restart_server_button, 0, 5)
+        connection_layout.addWidget(self.restart_app_button, 0, 6)
+        connection_layout.addWidget(self.update_button, 0, 7)
+        connection_layout.setColumnStretch(3, 1)
+        layout.addWidget(connection)
+
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        tabs.addTab(conversation_page, "对话配置")
+        tabs.addTab(system_page, "系统配置")
+        layout.addWidget(tabs, 1)
+        return page
+
     def _select_page(self, index: int) -> None:
-        self._pages.setCurrentIndex(index)
-        for i, nav in enumerate(self._nav_buttons):
-            nav.setChecked(i == index)
-        if index == 1 and hasattr(self, "memory_people"):
-            self._refresh_personal_memory_page()
+        if not 0 <= index < len(self._tool_windows):
+            return
+        target = self._tool_windows[index]
+        if self._active_tool_index == index and target.isVisible():
+            target.hide()
+            self._tool_window_hidden(index)
+            return
+        for i, window in enumerate(self._tool_windows):
+            if i != index:
+                window.hide()
+            self._nav_buttons[i].setChecked(i == index)
+        self._active_tool_index = index
+        if self._last_tool_rect is not None:
+            rect = self._last_tool_rect
+            target.setGeometry(rect.x, rect.y, rect.width, rect.height)
+        target.show()
+        target.raise_()
+        target.activateWindow()
+
+    def _tool_window_hidden(self, index: int) -> None:
+        if 0 <= index < len(self._nav_buttons):
+            self._nav_buttons[index].setChecked(False)
+        if self._active_tool_index == index:
+            self._active_tool_index = -1
+
+    def _sync_docked_windows(self) -> None:
+        wechat = find_wechat_window()
+        dock_visible = bool(
+            wechat is not None
+            and dock_context_is_foreground(wechat.handle, os.getpid())
+        )
+        if not dock_visible:
+            if self.isVisible():
+                self._dock_auto_hidden = True
+                self._dock_visibility_transition = True
+                try:
+                    self.hide()
+                finally:
+                    self._dock_visibility_transition = False
+            return
+        if self._dock_auto_hidden and not self.isVisible():
+            self._dock_visibility_transition = True
+            try:
+                self.show()
+            finally:
+                self._dock_visibility_transition = False
+            self._dock_auto_hidden = False
+        if wechat is not None:
+            work_area = wechat.work_area
+            wechat_rect = wechat.rect
+            self._last_wechat_handle = wechat.handle
+        else:
+            screen = self.screen()
+            available = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
+            work_area = DockRect(
+                available.x(), available.y(), available.width(), available.height()
+            )
+            wechat_rect = None
+        bar = toolbar_rect(
+            wechat_rect,
+            work_area,
+            self.width(),
+            self.height(),
+        )
+        self.setGeometry(bar.x, bar.y, bar.width, bar.height)
+        if wechat_rect is None:
+            self._last_tool_rect = None
+            return
+        rect, _side = tool_rect(
+            wechat_rect,
+            work_area,
+            preferred_width=760,
+            preferred_height=wechat_rect.height,
+        )
+        self._last_tool_rect = rect
+        if self._active_tool_index < 0:
+            return
+        window = self._tool_windows[self._active_tool_index]
+        window.setGeometry(rect.x, rect.y, rect.width, rect.height)
 
     def _connect(self) -> None:
         if self.gateway.connected:
@@ -2135,7 +2492,7 @@ class MainWindow(QMainWindow):
         )
         return next((path.resolve() for path in candidates if path.is_file()), candidates[0].resolve())
 
-    def _restart_server(self) -> None:
+    def _restart_server(self, *, automatic: bool = False) -> None:
         if not self.restart_server_button.isEnabled():
             self._server_auto_recovery_in_progress = False
             return
@@ -2157,20 +2514,29 @@ class MainWindow(QMainWindow):
                 self.gateway.call(self.account, "PauseMessageListener", "").result(timeout=3)
             except Exception as exc:
                 self._append_chat("自动聊天", f"暂停监听失败，继续重启：{exc}")
-            self.auto_chat_running = False
-            self._auto_chat_session += 1
             self._preview_timer.stop()
-            self._auto_chat_pending.clear()
-            self._auto_chat_active_tasks.clear()
-            self._auto_chat_queues.clear()
-            self._auto_task_enqueued_at.clear()
-            self._auto_task_started_at.clear()
-            self._group_metadata_waiting.clear()
-            task_pool = getattr(self, "task_status_pool", None)
-            if task_pool is not None:
-                task_pool.fail_active("Server 重启，任务已中止")
-                MainWindow._refresh_task_status_view(self)
-            self._set_auto_chat_ui_state("stopped")
+            if automatic:
+                # Transparent recovery must keep the user's logical switch and
+                # queued work intact. Active operations finish or fail through
+                # their normal callbacks after the gateway reconnects.
+                self._set_auto_chat_ui_state(
+                    "recovering",
+                    len(self._selected_auto_chat_targets()),
+                )
+            else:
+                self.auto_chat_running = False
+                self._auto_chat_session += 1
+                self._auto_chat_pending.clear()
+                self._auto_chat_active_tasks.clear()
+                self._auto_chat_queues.clear()
+                self._auto_task_enqueued_at.clear()
+                self._auto_task_started_at.clear()
+                self._group_metadata_waiting.clear()
+                task_pool = getattr(self, "task_status_pool", None)
+                if task_pool is not None:
+                    task_pool.fail_active("Server 重启，任务已中止")
+                    MainWindow._refresh_task_status_view(self)
+                self._set_auto_chat_ui_state("stopped")
         try:
             self.gateway.disconnect().result(timeout=3)
         except Exception:
@@ -2210,7 +2576,7 @@ class MainWindow(QMainWindow):
             "preview_timeout_count": self._preview_timeout_count,
         })
         self._append_chat("自动聊天", "连续读取会话超时，正在自动重启 Server 并恢复接管")
-        QTimer.singleShot(0, self._restart_server)
+        QTimer.singleShot(0, lambda: self._restart_server(automatic=True))
 
     def _check_for_updates(self, manual: bool = False) -> None:
         if self._update_check_in_progress or self._update_download_in_progress:
@@ -2349,37 +2715,12 @@ class MainWindow(QMainWindow):
             creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         )
         self.statusBar().showMessage("正在退出并安装新版本…")
+        self.setProperty("mybot_explicit_exit", True)
         QTimer.singleShot(250, self.close)
 
     @staticmethod
     def _restart_application_helper(process_id: int, app_root: Path) -> list[str]:
-        escaped_root = str(app_root.resolve()).replace("'", "''")
-        escaped_log = str((app_root.resolve() / "logs" / "restart-helper.log")).replace("'", "''")
-        script = (
-            "$ErrorActionPreference='Stop'; "
-            f"$log='{escaped_log}'; "
-            "try { "
-            "New-Item -ItemType Directory -Force -Path (Split-Path -Parent $log) | Out-Null; "
-            f"Add-Content -LiteralPath $log -Value ('{{0:o}} waiting for PID {int(process_id)}' -f [DateTime]::Now); "
-            f"while (Get-Process -Id {int(process_id)} -ErrorAction SilentlyContinue) "
-            "{ Start-Sleep -Milliseconds 200 }; "
-            "Start-Sleep -Milliseconds 300; "
-            f"$child=Start-Process -FilePath 'cmd.exe' -ArgumentList @('/d','/c','run.cmd') "
-            f"-WorkingDirectory '{escaped_root}' -WindowStyle Hidden -PassThru; "
-            "Add-Content -LiteralPath $log -Value ('{0:o} launched run.cmd, PID {1}' -f [DateTime]::Now,$child.Id) "
-            "} catch { "
-            "Add-Content -LiteralPath $log -Value ('{0:o} restart failed: {1}' -f [DateTime]::Now,$_.Exception.Message); "
-            "exit 1 }"
-        )
-        return [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-Command",
-            script,
-        ]
+        return restart_helper_command(process_id, app_root)
 
     def _restart_application(self) -> None:
         if not self.restart_app_button.isEnabled():
@@ -2395,16 +2736,10 @@ class MainWindow(QMainWindow):
         self._persist_auto_chat_selection()
         self._save_window_layout()
         try:
-            subprocess.Popen(
-                self._restart_application_helper(os.getpid(), app_root),
-                cwd=str(app_root),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+            launch_restart_helper(os.getpid(), app_root)
             operations.finish(span, success=True, result={"restart_scheduled": True})
             self.statusBar().showMessage("正在重启 MyBot 2.0…")
+            self.setProperty("mybot_explicit_exit", True)
             QTimer.singleShot(0, self.close)
         except Exception as exc:
             self.restart_app_button.setEnabled(True)
@@ -2508,13 +2843,14 @@ class MainWindow(QMainWindow):
         self.account_combo.addItems(self.gateway.clients)
         self.account_combo.blockSignals(False)
         self.account = self.gateway.clients[0] if self.gateway.clients else ""
+        if hasattr(self, "dock_account_status"):
+            self.dock_account_status.setText(self.account or "未锁定账号")
         self._set_connection(True, f"已连接 {self.gateway.uri}")
         self._append_chat("系统", f"已连接测试账号：{self.account}")
         should_resume_auto_chat = (
             self.auto_chat_running or self._resume_auto_chat_after_reconnect
         )
         self._resume_auto_chat_after_reconnect = False
-        self._server_auto_recovery_in_progress = False
         self._preview_timeout_count = 0
 
         def listener_reset(_result: GatewayResult) -> None:
@@ -2523,6 +2859,8 @@ class MainWindow(QMainWindow):
             if should_resume_auto_chat:
                 self._append_chat("自动聊天", "连接已恢复，正在重新接管原会话")
                 self._start_auto_chat(preserve_session=True)
+            else:
+                self._server_auto_recovery_in_progress = False
 
         # A previous frontend can disappear while the SDK listener remains
         # alive in the long-running server. Always take ownership from a
@@ -2536,12 +2874,22 @@ class MainWindow(QMainWindow):
         self.gateway.connected = connected
         self.connect_button.setText("断开" if connected else "连接")
         self.sidebar_status.setText("● 已连接" if connected else "● 未连接")
-        self.sidebar_status.setStyleSheet("color: #58d69b;" if connected else "color: #eab34c;")
+        connection_color = "#07c160" if connected else "#a7abb3"
+        self.sidebar_status.setStyleSheet(f"color: {connection_color};")
+        if hasattr(self, "dock_connection_status"):
+            self.dock_connection_status.setText("● 已连接" if connected else "● 未连接")
+            self.dock_connection_status.setStyleSheet(f"color: {connection_color};")
+        if self._nav_buttons:
+            self._nav_buttons[0].setProperty("connected", connected)
+            self._nav_buttons[0].style().unpolish(self._nav_buttons[0])
+            self._nav_buttons[0].style().polish(self._nav_buttons[0])
         self.statusBar().showMessage(message, 5000)
 
     def _account_changed(self, account: str) -> None:
         if account:
             self.account = account
+        if hasattr(self, "dock_account_status"):
+            self.dock_account_status.setText(account or "未锁定账号")
 
     def _run_future(self, future, callback: Callable[[GatewayResult], None]) -> None:
         def poll() -> None:
@@ -2670,23 +3018,102 @@ class MainWindow(QMainWindow):
         )
         MainWindow._refresh_task_status_view(self)
 
+    def _toggle_auto_chat_from_dock(self) -> None:
+        state = str(getattr(self, "_auto_chat_ui_state", "stopped"))
+        if state in {"starting", "stopping"}:
+            return
+        if self.auto_chat_running:
+            self._stop_auto_chat()
+        else:
+            self._start_auto_chat()
+
+    def _refresh_dock_task_progress(self, items: tuple[Any, ...]) -> None:
+        active_items = tuple(item for item in items if item.state in ACTIVE_TASK_STATES)
+        signature = tuple(item.task_id for item in active_items)
+        if signature != self._dock_task_signature:
+            while self.dock_task_layout.count():
+                layout_item = self.dock_task_layout.takeAt(0)
+                widget = layout_item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            self._dock_task_cells.clear()
+            for item in active_items:
+                cell = QFrame()
+                cell.setObjectName("dockTaskCell")
+                self.dock_task_layout.addWidget(cell, 1)
+                self._dock_task_cells[item.task_id] = cell
+            self._dock_task_signature = signature
+
+        self._dock_task_pulse = not self._dock_task_pulse
+        working_color = "#ffd66b" if self._dock_task_pulse else "#f2c14e"
+        sending_color = "#79b8ff" if self._dock_task_pulse else "#409eff"
+        for item in active_items:
+            cell = self._dock_task_cells.get(item.task_id)
+            if cell is None:
+                continue
+            colors = {
+                "queued": "#07c160",
+                "working": working_color,
+                "sending": sending_color,
+            }
+            cell.setStyleSheet(
+                f"background: {colors.get(item.state, working_color)}; "
+                "border: 0; border-radius: 2px;"
+            )
+            state_text = {
+                "queued": "排队中",
+                "working": "处理中",
+                "sending": "发送中",
+            }.get(item.state, item.state)
+            cell.setToolTip(
+                f"{state_text} · {item.conversation}\n{item.stage}\n{item.request or '[媒体消息]'}"
+            )
+        self.dock_task_strip.setToolTip(
+            f"当前 {len(active_items)} 个任务" if active_items else "当前没有任务"
+        )
+        has_work = any(item.state in {"working", "sending"} for item in active_items)
+        task_state = "working" if has_work else "queued" if active_items else "idle"
+        if self._nav_buttons:
+            status_button = self._nav_buttons[0]
+            status_button.setProperty("taskState", task_state)
+            status_button.setToolTip({
+                "working": f"处理中 · {len(active_items)} 个任务",
+                "queued": f"排队中 · {len(active_items)} 个任务",
+                "idle": "连接、运行状态与测试",
+            }[task_state])
+            status_button.style().unpolish(status_button)
+            status_button.style().polish(status_button)
+
+        visible = bool(active_items)
+        height_changed = (not self.dock_task_strip.isHidden()) != visible
+        self.dock_task_strip.setVisible(visible)
+        if height_changed:
+            self.setFixedHeight(DOCK_BUSY_HEIGHT if visible else DOCK_IDLE_HEIGHT)
+            sync = getattr(self, "_sync_docked_windows", None)
+            if callable(sync):
+                QTimer.singleShot(0, sync)
+
     def _refresh_task_status_view(self) -> None:
         pool = getattr(self, "task_status_pool", None)
         table = getattr(self, "work_table", None)
-        if pool is None or table is None:
+        if pool is None:
+            return
+        items = pool.snapshots()
+        if hasattr(self, "dock_task_strip"):
+            self._refresh_dock_task_progress(items)
+        if table is None:
             return
         counts = pool.counts()
         busy = counts["active"] > 0
         self.work_overall_status.setText("● 忙碌" if busy else "● 空闲")
         self.work_overall_status.setStyleSheet(
-            "color: #eab34c; font-weight: 700;" if busy
-            else "color: #58d69b; font-weight: 700;"
+            "color: #d99000; font-weight: 700;" if busy
+            else "color: #07c160; font-weight: 700;"
         )
         self.work_active_count.setText(f"处理中 {counts['working']}")
         self.work_queue_count.setText(f"排队 {counts['queued']}")
         self.work_completed_count.setText(f"最近完成 {counts['completed']}")
         self.work_failed_count.setText(f"失败 {counts['failed']}")
-        items = pool.snapshots()
         table.setRowCount(len(items))
         state_labels = {
             "queued": "排队中",
@@ -3097,7 +3524,7 @@ class MainWindow(QMainWindow):
         existing_chat = self.settings.get("chat", {})
         chat_settings = dict(existing_chat) if isinstance(existing_chat, dict) else {}
         chat_settings.update({
-            "system_prompt": self.model_system_prompt.text().strip(),
+            "system_prompt": self.model_system_prompt.toPlainText().strip(),
             "reply_keyword": self.reply_keyword.text().strip(),
             "cooldown_seconds": self.reply_cooldown.value(),
             "max_concurrency": self.chat_concurrency.value(),
@@ -3270,6 +3697,7 @@ class MainWindow(QMainWindow):
             config,
             yolo_mode=config.yolo_mode and privileged,
             restricted_workspace=not privileged,
+            privileged=privileged,
         )
         return CodexCliRunner(config, self.ability_store, self.codex_thread_store)
 
@@ -3299,7 +3727,7 @@ class MainWindow(QMainWindow):
             base_url=self.model_base_url.text().strip(),
             model=self.model_name.currentText().strip(),
             api_key=self.model_api_key.text().strip(),
-            system_prompt=self.model_system_prompt.text().strip(),
+            system_prompt=self.model_system_prompt.toPlainText().strip(),
         )
 
     def _backup_model_config(self) -> ModelConfig | None:
@@ -3312,7 +3740,7 @@ class MainWindow(QMainWindow):
             base_url=url,
             model=model,
             api_key=self.model_backup_key.text().strip(),
-            system_prompt=self.model_system_prompt.text().strip(),
+            system_prompt=self.model_system_prompt.toPlainText().strip(),
         )
 
     def _auto_chat_model_timeout(self) -> int:
@@ -3389,49 +3817,57 @@ class MainWindow(QMainWindow):
     def _set_auto_chat_ui_state(self, state: str, target_count: int = 0, message: str = "") -> None:
         start_styles = {
             "stopped": """
-                QPushButton { background: #2f6fed; color: #ffffff; border: 1px solid #4c82ed;
+                QPushButton { background: #07c160; color: #ffffff; border: 1px solid #07c160;
                               border-radius: 6px; padding: 7px 15px; font-weight: 600; }
-                QPushButton:hover { background: #3b7af0; }
+                QPushButton:hover { background: #06ad56; }
             """,
             "starting": """
-                QPushButton:disabled { background: #7a5b19; color: #ffe7aa; border: 1px solid #a87b20;
+                QPushButton:disabled { background: #f2c14e; color: #5d4700; border: 1px solid #e0ae35;
                                        border-radius: 6px; padding: 7px 15px; font-weight: 600; }
             """,
             "running": """
-                QPushButton:disabled { background: #176342; color: #d6ffeb; border: 1px solid #2b9b6b;
+                QPushButton:disabled { background: #dff6e9; color: #07974b; border: 1px solid #a9e4c4;
+                                       border-radius: 6px; padding: 7px 15px; font-weight: 600; }
+            """,
+            "recovering": """
+                QPushButton:disabled { background: #fff4d6; color: #a36a00; border: 1px solid #edce7b;
                                        border-radius: 6px; padding: 7px 15px; font-weight: 600; }
             """,
             "stopping": """
-                QPushButton:disabled { background: #633036; color: #ffd9dc; border: 1px solid #a44b55;
+                QPushButton:disabled { background: #f3e5e6; color: #a33a43; border: 1px solid #e2c5c8;
                                        border-radius: 6px; padding: 7px 15px; font-weight: 600; }
             """,
             "error": """
-                QPushButton { background: #2f6fed; color: #ffffff; border: 1px solid #4c82ed;
+                QPushButton { background: #07c160; color: #ffffff; border: 1px solid #07c160;
                               border-radius: 6px; padding: 7px 15px; font-weight: 600; }
-                QPushButton:hover { background: #3b7af0; }
+                QPushButton:hover { background: #06ad56; }
             """,
         }
         status_texts = {
             "stopped": "● 未运行",
             "starting": "● 正在连接监听...",
             "running": f"● 运行中 · {target_count} 个会话",
+            "recovering": "● 正在恢复连接...",
             "stopping": "● 正在停止...",
             "error": "● 启动失败",
         }
         status_colors = {
-            "stopped": "#8b9aac",
-            "starting": "#eab34c",
-            "running": "#58d69b",
-            "stopping": "#eab34c",
-            "error": "#ff747f",
+            "stopped": "#8a8d94",
+            "starting": "#d99000",
+            "running": "#07c160",
+            "recovering": "#d99000",
+            "stopping": "#d99000",
+            "error": "#d84c57",
         }
         if state not in status_texts:
             raise ValueError(f"Unknown auto-chat UI state: {state}")
+        self._auto_chat_ui_state = state
 
         self.auto_chat_start.setText({
             "stopped": "开始自动聊天",
             "starting": "正在启动...",
             "running": "自动聊天运行中",
+            "recovering": "自动聊天恢复中",
             "stopping": "自动聊天运行中",
             "error": "重新开始自动聊天",
         }[state])
@@ -3440,14 +3876,34 @@ class MainWindow(QMainWindow):
         self.auto_chat_stop.setEnabled(state == "running")
         self.auto_chat_start.setStyleSheet(start_styles[state])
         self.auto_chat_stop.setStyleSheet("""
-            QPushButton { background: #8f2f3a; color: #ffffff; border: 1px solid #c34c5a;
+            QPushButton { background: #ffffff; color: #d84c57; border: 1px solid #e3b9bd;
                           border-radius: 6px; padding: 7px 15px; font-weight: 600; }
-            QPushButton:hover { background: #a53a47; }
-            QPushButton:disabled { background: #252f3b; color: #697789; border-color: #354253; }
+            QPushButton:hover { background: #fff3f4; }
+            QPushButton:disabled { background: #f4f4f5; color: #b5b7bc; border-color: #e7e8ea; }
         """)
         self.auto_chat_status.setText(status_texts[state])
         self.auto_chat_status.setStyleSheet(f"color: {status_colors[state]}; font-weight: 600;")
         self.auto_chat_status.setToolTip(message if state == "error" else "")
+        if hasattr(self, "dock_work_status"):
+            self.dock_work_status.setText(status_texts[state].removeprefix("● "))
+        if hasattr(self, "dock_auto_chat_toggle"):
+            running = state in {"running", "recovering", "stopping"}
+            self.dock_auto_chat_toggle.setEnabled(
+                state not in {"starting", "recovering", "stopping"}
+            )
+            self.dock_auto_chat_toggle.setProperty("running", running)
+            self.dock_auto_chat_toggle.setIcon(
+                QIcon(str(
+                    auto_chat_on_icon_path() if running else auto_chat_off_icon_path()
+                ))
+            )
+            self.dock_auto_chat_toggle.setToolTip(
+                "自动对话恢复中" if state == "recovering"
+                else "关闭自动对话" if running
+                else "启动自动对话"
+            )
+            self.dock_auto_chat_toggle.style().unpolish(self.dock_auto_chat_toggle)
+            self.dock_auto_chat_toggle.style().polish(self.dock_auto_chat_toggle)
 
     def _start_auto_chat(self, *, preserve_session: bool = False) -> None:
         targets = set(self._selected_auto_chat_targets())
@@ -3477,7 +3933,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "未连接", "请先连接 WebSocket Server。")
             return
 
-        self._set_auto_chat_ui_state("starting", len(targets))
+        self._set_auto_chat_ui_state(
+            "recovering" if preserve_session else "starting",
+            len(targets),
+        )
 
         def activated(result: GatewayResult) -> None:
             if not result.ok or result.value is False:
@@ -3485,6 +3944,7 @@ class MainWindow(QMainWindow):
                 operations.finish(span, success=False, error=error)
                 if preserve_session:
                     self.auto_chat_running = False
+                    self._server_auto_recovery_in_progress = False
                 self._set_auto_chat_ui_state("error", message=error)
                 self._append_chat("自动聊天", f"启动监听失败：{error}")
                 return
@@ -3492,6 +3952,8 @@ class MainWindow(QMainWindow):
             if not preserve_session:
                 self._auto_chat_session += 1
             self.auto_chat_running = True
+            if preserve_session:
+                self._server_auto_recovery_in_progress = False
             self._set_auto_chat_ui_state("running", len(targets))
             self._append_chat("自动聊天", "已开始接管：" + "、".join(sorted(targets)))
             self._preview_poll_pending = False
@@ -3506,6 +3968,19 @@ class MainWindow(QMainWindow):
             self._preview_timer.start()
             self._append_chat("自动聊天", "监听已启动，预览列表每 1 秒进行一次兜底检查")
             operations.finish(span, success=True, result={"targets": sorted(targets)})
+            QTimer.singleShot(
+                0,
+                lambda: MainWindow._resume_deferred_preview_messages(self),
+            )
+            if preserve_session:
+                for chat_title, queue in tuple(
+                    getattr(self, "_auto_chat_queues", {}).items()
+                ):
+                    if queue:
+                        QTimer.singleShot(
+                            0,
+                            lambda title=chat_title: self._process_next_auto_message(title),
+                        )
             if getattr(self, "_group_metadata_refresh_pending", False):
                 self._refresh_group_metadata()
 
@@ -3590,6 +4065,40 @@ class MainWindow(QMainWindow):
             self._run_gateway_sequence(calls[1:], callback)
 
         self._run_future(self.gateway.call(self.account, function, options), done)
+
+    def _run_auto_gateway_send(
+        self,
+        incoming: Any,
+        session: int,
+        function: str,
+        options: Any,
+        callback: Callable[[GatewayResult], None],
+    ) -> None:
+        if (
+            session != getattr(self, "_auto_chat_session", session)
+            or not getattr(self, "auto_chat_running", True)
+        ):
+            callback(GatewayResult(False, error="自动聊天会话已停止"))
+            return
+        if (
+            getattr(self, "_server_auto_recovery_in_progress", False)
+            or not getattr(getattr(self, "gateway", None), "connected", True)
+        ):
+            MainWindow._task_status_update(
+                self,
+                incoming,
+                state="working",
+                stage="等待连接恢复",
+                kind="微信发送",
+            )
+            QTimer.singleShot(
+                250,
+                lambda: MainWindow._run_auto_gateway_send(
+                    self, incoming, session, function, options, callback
+                ),
+            )
+            return
+        self._run_future(self.gateway.call(self.account, function, options), callback)
 
     def _stop_auto_chat(self) -> None:
         if not self.auto_chat_running:
@@ -3852,17 +4361,10 @@ class MainWindow(QMainWindow):
         if (
             not self.auto_chat_running
             or self._preview_poll_pending
-            or not self.gateway.connected
+            or not getattr(getattr(self, "gateway", None), "connected", True)
             or getattr(self, "_original_image_fetch_count", 0) > 0
+            or bool(getattr(self, "_auto_chat_active_tasks", set()))
             or getattr(self, "_group_metadata_refresh_in_progress", False)
-            or any(
-                item.state == "sending"
-                for item in getattr(
-                    getattr(self, "task_status_pool", None),
-                    "snapshots",
-                    lambda: (),
-                )()
-            )
             or time.monotonic() < getattr(self, "_preview_backoff_until", 0.0)
         ):
             return
@@ -3911,6 +4413,7 @@ class MainWindow(QMainWindow):
                 latest_media = {}
                 self._latest_incoming_media = latest_media
             selected = self._selected_auto_chat_targets()
+            MainWindow._sync_shared_outgoing_echoes(self)
             for item in result.value:
                 if not isinstance(item, dict):
                     continue
@@ -3937,6 +4440,8 @@ class MainWindow(QMainWindow):
                 )
                 if previous is None:
                     continue
+                if previous == fingerprint and not is_image_preview:
+                    continue
                 suppressed_until = getattr(self, "_preview_suppressed_until", {}).get(title, 0.0)
                 if time.monotonic() < suppressed_until:
                     if is_image_preview:
@@ -3950,8 +4455,6 @@ class MainWindow(QMainWindow):
                     continue
                 last_sent = self._auto_chat_sent_contents.get(title, "")
                 if last_sent and content in {last_sent, f"{self.account}: {last_sent}", f"{self.account}：{last_sent}"}:
-                    continue
-                if previous == fingerprint and not is_image_preview:
                     continue
                 # The SDK reports PascalCase fields and can retain an unread
                 # counter after opening the conversation. Normalize both the
@@ -4007,15 +4510,32 @@ class MainWindow(QMainWindow):
             self._accept_auto_message(preview_incoming)
             return
         latest = getattr(self, "_preview_burst_latest", None)
+        if latest is None:
+            latest = {}
+            self._preview_burst_latest = latest
+        if getattr(self, "_auto_chat_active_tasks", set()):
+            existing = latest.get(chat_title)
+            latest[chat_title] = (
+                existing[0] if existing is not None else previous_fingerprint,
+                preview_incoming,
+                fingerprint,
+            )
+            operations.event("workflow", "preview_burst_deferred", {
+                "chat_title": chat_title,
+                "fingerprint": fingerprint,
+            })
+            return
         if chat_title in pending:
             if isinstance(latest, dict):
+                existing = latest.get(chat_title)
                 latest[chat_title] = (
-                    previous_fingerprint,
+                    existing[0] if existing is not None else previous_fingerprint,
                     preview_incoming,
                     fingerprint,
                 )
             return
         pending.add(chat_title)
+        MainWindow._sync_shared_outgoing_echoes(self)
         previous_content = str(previous_fingerprint or "").rsplit("|", 1)[0]
 
         def complete() -> None:
@@ -4036,43 +4556,71 @@ class MainWindow(QMainWindow):
                 complete()
                 return
             if not result.ok or not isinstance(result.value, list):
+                is_timeout = "timeout" in str(result.error or "").casefold()
+                if is_timeout:
+                    pending.discard(chat_title)
+                    if isinstance(latest, dict):
+                        latest[chat_title] = (
+                            previous_fingerprint,
+                            preview_incoming,
+                            fingerprint,
+                        )
+                    self._recover_stalled_server(str(result.error))
+                    return
                 fallback(str(result.error or "invalid visible message payload"))
                 complete()
                 return
             visible = [
                 item for item in result.value
                 if isinstance(item, dict)
-                and str(item.get("who") or "").strip() not in {"系统", "我", self.account}
                 and str(item.get("message") or "").strip()
             ]
             anchor = -1
             for index, item in enumerate(visible):
                 if str(item.get("message") or "").strip() == previous_content:
                     anchor = index
-            if anchor < 0:
-                fallback("previous preview anchor is not visible")
+            current_content = str(preview_incoming.content or "").strip()
+            current_index = next(
+                (
+                    index for index in range(len(visible) - 1, -1, -1)
+                    if str(visible[index].get("message") or "").strip() == current_content
+                ),
+                -1,
+            )
+            recovery_mode = "anchor"
+            if anchor >= 0:
+                end = current_index + 1 if current_index > anchor else len(visible)
+                recovered = visible[anchor + 1:end]
+            elif current_index >= 0:
+                recovery_mode = "visible_tail"
+                divider = next(
+                    (
+                        index for index in range(current_index, -1, -1)
+                        if str(visible[index].get("who") or "").strip() == "系统"
+                    ),
+                    -1,
+                )
+                start = divider + 1 if divider >= 0 else max(0, current_index - 11)
+                recovered = visible[start:current_index + 1]
+                operations.event("workflow", "preview_burst_fallback", {
+                    "chat_title": chat_title,
+                    "reason": "previous preview anchor is not visible; recovered visible tail",
+                })
+            else:
+                fallback("current preview is not visible")
                 complete()
                 return
-            current_content = str(preview_incoming.content or "").strip()
-            recovered = visible[anchor + 1:]
-            end = next(
-                (
-                    index + 1 for index in range(len(recovered) - 1, -1, -1)
-                    if str(recovered[index].get("message") or "").strip() == current_content
-                ),
-                len(recovered),
-            )
-            recovered = recovered[:end]
             accepted = 0
             timestamp = datetime.now().isoformat(timespec="seconds")
             for index, item in enumerate(recovered):
                 content = str(item.get("message") or "").strip()
-                if not content:
+                who = str(item.get("who") or "").strip()
+                if not content or who in {"系统", "我", self.account}:
                     continue
                 source_id = str(item.get("unique_string") or index).strip()
                 incoming = IncomingMessage(
                     chat_title,
-                    str(item.get("who") or preview_incoming.who or "对方"),
+                    who or preview_incoming.who or "对方",
                     content,
                     f"{timestamp}|visible:{source_id}",
                 )
@@ -4082,11 +4630,14 @@ class MainWindow(QMainWindow):
                 fallback("no messages after preview anchor")
                 complete()
                 return
-            operations.event("workflow", "preview_burst_recovered", {
+            recovery_details = {
                 "chat_title": chat_title,
                 "accepted": accepted,
                 "fingerprint": fingerprint,
-            })
+            }
+            if recovery_mode != "anchor":
+                recovery_details["mode"] = recovery_mode
+            operations.event("workflow", "preview_burst_recovered", recovery_details)
             complete()
 
         self._run_future(
@@ -4098,6 +4649,40 @@ class MainWindow(QMainWindow):
             ),
             loaded,
         )
+
+    def _sync_shared_outgoing_echoes(self) -> None:
+        journal = getattr(self, "_outgoing_echo_journal", None)
+        if journal is None:
+            return
+        cursor = int(getattr(self, "_outgoing_echo_cursor", 0) or 0)
+        try:
+            cursor, echoes = journal.read_after(cursor)
+        except (OSError, sqlite3.Error):
+            return
+        self._outgoing_echo_cursor = cursor
+        message_cursor = getattr(self, "_message_cursor", None)
+        if message_cursor is None:
+            return
+        for echo in echoes:
+            if echo.process_id == os.getpid():
+                continue
+            if echo.kind == "voice":
+                message_cursor.record_outgoing_voice(echo.conversation, echo.content)
+            elif echo.kind == "media":
+                message_cursor.record_outgoing_media(echo.conversation, echo.content)
+            else:
+                message_cursor.record_outgoing(echo.conversation, echo.content)
+
+    def _resume_deferred_preview_messages(self) -> None:
+        if getattr(self, "_auto_chat_active_tasks", set()):
+            return
+        latest = getattr(self, "_preview_burst_latest", None)
+        if not isinstance(latest, dict) or not latest:
+            return
+        deferred = tuple(latest.items())
+        latest.clear()
+        for chat_title, request in deferred:
+            MainWindow._fetch_preview_messages(self, chat_title, *request)
 
     def _fetch_preview_image(
         self,
@@ -4266,7 +4851,12 @@ class MainWindow(QMainWindow):
 
     def _process_next_auto_message(self, chat_title: str) -> None:
         queue = self._auto_chat_queues.get(chat_title)
-        if not self.auto_chat_running or not queue:
+        if (
+            not self.auto_chat_running
+            or not queue
+            or getattr(self, "_server_auto_recovery_in_progress", False)
+            or not getattr(getattr(self, "gateway", None), "connected", True)
+        ):
             return
         active_count = MainWindow._auto_chat_active_count(self, chat_title)
         concurrency_control = getattr(self, "chat_concurrency", None)
@@ -4429,7 +5019,8 @@ class MainWindow(QMainWindow):
                 incoming.content,
                 self.memory.transcript(incoming.chat_title),
             )
-            if self.codex_enabled.isChecked() and action.kind is ReplyKind.TEXT
+            if self.codex_enabled.isChecked()
+            and action.kind in {ReplyKind.TEXT, ReplyKind.VOICE}
             else None
         )
         if realtime_request is not None:
@@ -4448,7 +5039,10 @@ class MainWindow(QMainWindow):
                 "kind": realtime_request.kind,
             })
             future = self.model_executor.submit(self.realtime_tool_executor.execute, realtime_request)
-            self._start_auto_realtime_tool(future, incoming, session)
+            if action.kind is ReplyKind.VOICE:
+                self._start_auto_realtime_tool(future, incoming, session, action)
+            else:
+                self._start_auto_realtime_tool(future, incoming, session)
             return
         if (
             self.codex_enabled.isChecked()
@@ -4530,18 +5124,17 @@ class MainWindow(QMainWindow):
                     "真实绝对路径、其他人的历史对话或个人隐私；回复中只使用必要的文件名和脱敏信息。"
                 ),
             })
-        if action.kind is ReplyKind.TEXT and self.codex_enabled.isChecked():
-            context.insert(1, {
-                "role": "system",
-                "content": CodexTaskRouter.model_instruction(),
-            })
         if action.kind is ReplyKind.TEXT:
+            voice_settings = self.settings.get("voice", {})
+            voice_enabled = bool(
+                isinstance(voice_settings, dict)
+                and voice_settings.get("enabled", False)
+            )
             context.insert(1, {
                 "role": "system",
-                "content": (
-                    "如果当前语境最适合只用一个收藏或自定义表情包回应，可以只返回 "
-                    "<MYBOT_STICKER>；需要指定风格时只返回 <MYBOT_STICKER:关键词>。"
-                    "不要把标记和文字混合，不要频繁使用，也不要选择微信默认 Emoji。"
+                "content": model_reply_mode_instruction(
+                    voice_enabled=voice_enabled,
+                    codex_enabled=self.codex_enabled.isChecked(),
                 ),
             })
         if action.kind is ReplyKind.VOICE:
@@ -4865,7 +5458,9 @@ class MainWindow(QMainWindow):
             })
             self._finish_auto_codex(codex_future, runner, incoming, session)
 
-        self._run_future(self.gateway.call(self.account, "SendMessage", options), acknowledged)
+        MainWindow._run_auto_gateway_send(
+            self, incoming, session, "SendMessage", options, acknowledged
+        )
 
     def _finish_auto_codex(self, future, runner: CodexCliRunner, incoming, session: int) -> None:
         if not future.done():
@@ -5100,7 +5695,9 @@ class MainWindow(QMainWindow):
                 Path(file_path).name,
             )
             self._suppress_outgoing_media_preview(incoming.chat_title)
-            self._run_future(self.gateway.call(self.account, "SendFile", options), sent)
+            MainWindow._run_auto_gateway_send(
+                self, incoming, session, "SendFile", options, sent
+            )
 
         send_next()
 
@@ -5222,8 +5819,14 @@ class MainWindow(QMainWindow):
                         image_understanding.kind,
                         image_understanding.description,
                     )
+            model_action = ReplyAction(ReplyKind.TEXT)
+            if action.kind is ReplyKind.TEXT:
+                model_action, model_content = model_reply_action(reply)
+                if model_action.kind in {ReplyKind.TEXT, ReplyKind.VOICE}:
+                    reply = model_content
             if (
                 action.kind is ReplyKind.TEXT
+                and model_action.kind is ReplyKind.TEXT
                 and self.codex_enabled.isChecked()
                 and CodexTaskRouter.model_requested_delegate(reply)
             ):
@@ -5233,13 +5836,23 @@ class MainWindow(QMainWindow):
                 })
                 self._start_auto_codex(incoming, session, route_source="model")
                 return
-            sticker_query = model_sticker_request(reply) if action.kind is ReplyKind.TEXT else None
-            if sticker_query is not None:
+            if action.kind is ReplyKind.TEXT and model_action.kind is ReplyKind.STICKER:
                 operations.event("sticker", "model_sticker_route", {
                     "chat_title": incoming.chat_title,
-                    "query": sticker_query,
+                    "query": model_action.argument,
                 })
-                self._send_auto_sticker(incoming, session, sticker_query)
+                self._send_auto_sticker(incoming, session, model_action.argument)
+                return
+            if action.kind is ReplyKind.TEXT and model_action.kind is ReplyKind.IMAGE:
+                operations.event("workflow", "model_image_route", {
+                    "chat_title": incoming.chat_title,
+                })
+                future = self.model_executor.submit(
+                    self.model_client.generate_image,
+                    self._image_config(),
+                    model_action.argument,
+                )
+                self._finish_auto_image(future, incoming, session)
                 return
             reply = sanitize_auto_reply_text(reply)
             if _IMAGE_RESEND_REPLY.search(reply) and (
@@ -5259,7 +5872,12 @@ class MainWindow(QMainWindow):
             self._finish_auto_message(incoming, success=False, error=exc)
             return
 
-        if action.kind is ReplyKind.VOICE:
+        reply_kind = (
+            model_action.kind
+            if action.kind is ReplyKind.TEXT and model_action.kind is ReplyKind.VOICE
+            else action.kind
+        )
+        if reply_kind is ReplyKind.VOICE:
             voice_settings = self.settings.get("voice", {})
             if not isinstance(voice_settings, dict) or not bool(voice_settings.get("enabled", False)):
                 self._append_chat("自动聊天", "语音回复未启用，本次改为文字发送")
@@ -5269,7 +5887,13 @@ class MainWindow(QMainWindow):
             return
         self._send_auto_text_segments(incoming, session, segments, reply)
 
-    def _start_auto_realtime_tool(self, future, incoming, session: int) -> None:
+    def _start_auto_realtime_tool(
+        self,
+        future,
+        incoming,
+        session: int,
+        reply_action: ReplyAction | None = None,
+    ) -> None:
         acknowledgement = "稍等，我去看一下"
         self._message_cursor.record_outgoing(incoming.chat_title, acknowledgement)
         reference, reference_reason = self._auto_reply_reference(incoming)
@@ -5300,13 +5924,40 @@ class MainWindow(QMainWindow):
                 })
             else:
                 self._append_chat("实时工具", f"查询提示发送失败：{result.error or result.value}")
-            self._finish_auto_realtime_tool(future, incoming, session)
+            if reply_action is None:
+                self._finish_auto_realtime_tool(future, incoming, session)
+            else:
+                self._finish_auto_realtime_tool(future, incoming, session, reply_action)
 
-        self._run_future(self.gateway.call(self.account, "SendMessage", options), acknowledged)
+        MainWindow._run_auto_gateway_send(
+            self, incoming, session, "SendMessage", options, acknowledged
+        )
 
-    def _finish_auto_realtime_tool(self, future, incoming, session: int) -> None:
+    def _finish_auto_realtime_tool(
+        self,
+        future,
+        incoming,
+        session: int,
+        reply_action: ReplyAction | None = None,
+    ) -> None:
         if not future.done():
-            QTimer.singleShot(100, lambda: self._finish_auto_realtime_tool(future, incoming, session))
+            QTimer.singleShot(
+                100,
+                lambda: MainWindow._finish_auto_realtime_tool(
+                    self, future, incoming, session, reply_action
+                ),
+            )
+            return
+        if (
+            getattr(self, "_server_auto_recovery_in_progress", False)
+            or not getattr(getattr(self, "gateway", None), "connected", True)
+        ):
+            QTimer.singleShot(
+                250,
+                lambda: MainWindow._finish_auto_realtime_tool(
+                    self, future, incoming, session, reply_action
+                ),
+            )
             return
         if session != self._auto_chat_session or not self.auto_chat_running:
             self._finish_auto_message(incoming, success=False, error="自动聊天会话已停止")
@@ -5322,6 +5973,12 @@ class MainWindow(QMainWindow):
             })
             self._start_auto_codex(incoming, session, route_source="realtime_fallback")
             return
+        if reply_action is not None and reply_action.kind is ReplyKind.VOICE:
+            voice_settings = self.settings.get("voice", {})
+            if isinstance(voice_settings, dict) and bool(voice_settings.get("enabled", False)):
+                self._send_auto_voice(incoming, session, " ".join(segments), reply)
+                return
+            self._append_chat("实时工具", "语音回复未启用，本次改为文字发送")
         self._send_auto_text_segments(incoming, session, segments, reply)
 
     def _auto_reply_reference(self, incoming: Any) -> tuple[dict[str, Any] | None, str]:
@@ -5459,7 +6116,9 @@ class MainWindow(QMainWindow):
                     return
                 QTimer.singleShot(220, send_next)
 
-            self._run_future(self.gateway.call(self.account, "SendMessage", options), sent)
+            MainWindow._run_auto_gateway_send(
+                self, incoming, session, "SendMessage", options, sent
+            )
 
         send_next()
 
@@ -5488,10 +6147,10 @@ class MainWindow(QMainWindow):
                     incoming, success=False, error="自动聊天会话已停止"
                 )
                 return
-            MainWindow._task_status_update(
-                self, incoming, state="sending", stage="合成并发送语音", kind="语音"
-            )
             if source == "api":
+                MainWindow._task_status_update(
+                    self, incoming, state="working", stage="合成语音", kind="语音"
+                )
                 self._send_auto_voice_api(
                     incoming,
                     session,
@@ -5502,6 +6161,10 @@ class MainWindow(QMainWindow):
                     performance,
                 )
                 return
+
+            MainWindow._task_status_update(
+                self, incoming, state="sending", stage="合成并发送语音", kind="语音"
+            )
 
             request = {
                 "input": text,
@@ -5666,6 +6329,9 @@ class MainWindow(QMainWindow):
 
             self._message_cursor.record_outgoing_voice(incoming.chat_title, text)
             self._suppress_outgoing_media_preview(incoming.chat_title)
+            MainWindow._task_status_update(
+                self, incoming, state="sending", stage="发送语音", kind="语音"
+            )
 
             def sent(result: GatewayResult) -> None:
                 path.unlink(missing_ok=True)
@@ -5690,7 +6356,9 @@ class MainWindow(QMainWindow):
                 self._append_chat("自动回复", f"{incoming.chat_title}: 已发送语音 · {text}")
                 self._finish_auto_message(incoming, result={"reply_kind": "voice", "source": "api"})
 
-            self._run_future(self.gateway.call(self.account, "SendVoiceMessage", options), sent)
+            MainWindow._run_auto_gateway_send(
+                self, incoming, session, "SendVoiceMessage", options, sent
+            )
 
         def finished(result: GatewayResult) -> None:
             if not result.ok:
@@ -5940,6 +6608,9 @@ class MainWindow(QMainWindow):
             "SendSticker",
             {"who": incoming.chat_title, "category": category, "sticker": sticker},
         )
+        MainWindow._task_status_update(
+            self, incoming, state="sending", stage="发送表情包", kind="表情包"
+        )
 
         def sent(result: GatewayResult) -> None:
             if session != self._auto_chat_session or not result.ok or result.value is False:
@@ -5972,7 +6643,9 @@ class MainWindow(QMainWindow):
             })
 
         self._suppress_outgoing_media_preview(incoming.chat_title)
-        self._run_future(self.gateway.call(self.account, "SendSticker", options), sent)
+        MainWindow._run_auto_gateway_send(
+            self, incoming, session, "SendSticker", options, sent
+        )
 
     def _fetch_latest_original_and_edit(
         self,
@@ -6110,7 +6783,12 @@ class MainWindow(QMainWindow):
 
         self._suppress_outgoing_media_preview(incoming.chat_title)
         self._message_cursor.record_outgoing_media(incoming.chat_title, "[图片]")
-        self._run_future(self.gateway.call(self.account, "SendFile", options), sent)
+        MainWindow._task_status_update(
+            self, incoming, state="sending", stage="发送图片", kind="微信发送"
+        )
+        MainWindow._run_auto_gateway_send(
+            self, incoming, session, "SendFile", options, sent
+        )
 
     def _schedule_personal_learning(self, incoming, assistant_reply: str) -> None:
         if not self.personal_memory_enabled.isChecked() or not incoming.content.strip():
@@ -6191,9 +6869,36 @@ class MainWindow(QMainWindow):
         was_active = task_key in active_tasks
         active_tasks.discard(task_key)
         pool = getattr(self, "task_status_pool", None)
+        gateway_timeout = False
+        timeout_stage = ""
         if pool is not None:
+            current = next(
+                (item for item in pool.snapshots() if item.task_id == task_key),
+                None,
+            )
+            gateway_timeout = bool(
+                not success
+                and current is not None
+                and current.state == "sending"
+                and "timeout" in str(error or "").casefold()
+            )
+            timeout_stage = current.stage if current is not None else "发送"
             pool.finish(task_key, success=success, error=str(error or ""))
             MainWindow._refresh_task_status_view(self)
+        if gateway_timeout:
+            self._gateway_recovery_error = f"{timeout_stage}超时"
+        if not active_tasks:
+            recovery_error = str(getattr(self, "_gateway_recovery_error", "") or "")
+            if recovery_error:
+                self._gateway_recovery_error = ""
+                recover = getattr(self, "_recover_stalled_server", None)
+                if callable(recover):
+                    QTimer.singleShot(0, lambda: recover(recovery_error))
+            else:
+                QTimer.singleShot(
+                    0,
+                    lambda: MainWindow._resume_deferred_preview_messages(self),
+                )
         pending = self._auto_chat_pending
         if isinstance(pending, dict):
             if was_active:

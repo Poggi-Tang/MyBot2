@@ -28,7 +28,9 @@ jobs:
         shell: pwsh
         run: |
           $version = python -c "from mybot_ui import __version__; print(__version__)"
-          if ("v$version" -ne "${{ github.ref_name }}" -and "${{ github.event_name }}" -ne "workflow_dispatch") {
+          $tag = "${{ github.ref_name }}"
+          $validTag = ($tag -eq "v$version") -or $tag.StartsWith("v$version-beta.")
+          if (-not $validTag -and "${{ github.event_name }}" -ne "workflow_dispatch") {
             throw "Tag ${{ github.ref_name }} does not match application version v$version"
           }
           "MYBOT_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -58,6 +60,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ contains(github.ref_name, '-beta.') }}
           body_path: docs/releases/v${{ env.MYBOT_VERSION }}.md
           files: |
             dist/MyBot2-Setup-${{ env.MYBOT_VERSION }}-x64.exe

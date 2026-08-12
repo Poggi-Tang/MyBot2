@@ -1,0 +1,13 @@
+interface:
+  display_name: "AutoWX Strategyd"
+  short_description: "Safely plan and run allowlisted WeChat SDK operations"
+  default_prompt: "Use $autowx-strategyd to plan and safely execute this WeChat SDK task through the autowx MCP."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "autowx"
+      description: "Standalone controlled MCP facade for the MyBot WeChat SDK catalog"
+
+policy:
+  allow_implicit_invocation: true

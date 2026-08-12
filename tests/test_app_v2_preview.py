@@ -151,7 +151,61 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
         self.assertEqual(2, len(calls))
         self.assertEqual(2, len(callbacks))
 
-    def test_preview_polling_continues_while_a_reply_is_active(self):
+    def test_missing_anchor_recovers_every_message_in_current_visible_burst(self):
+        accepted = []
+        visible = [
+            {"who": "对方", "message": "更早的旧消息", "unique_string": "old"},
+            {"who": "系统", "message": "14:09", "unique_string": "divider"},
+            {"who": "对方", "message": "发语音告诉我", "unique_string": "one"},
+            {"who": "对方", "message": "你在干嘛", "unique_string": "two"},
+            {"who": "对方", "message": "画一张奥特曼给我看看", "unique_string": "three"},
+            {"who": "对方", "message": "再发个可爱的表情包", "unique_string": "four"},
+            {
+                "who": "对方",
+                "message": "今天闵行区的天气，语音播报给我",
+                "unique_string": "five",
+            },
+        ]
+        window = SimpleNamespace(
+            _preview_burst_fetches=set(),
+            _preview_burst_latest={},
+            _auto_chat_active_tasks=set(),
+            auto_chat_running=True,
+            account="圆子",
+            gateway=SimpleNamespace(
+                call=lambda *_args, **_kwargs: GatewayResult(True, visible)
+            ),
+            _accept_auto_message=accepted.append,
+            _run_future=lambda value, callback: callback(value),
+        )
+        preview = IncomingMessage(
+            "芝士圆子",
+            "对方",
+            "今天闵行区的天气，语音播报给我",
+            "2026-08-12T14:09:30",
+        )
+
+        with patch("mybot_ui.app_v2.operations.event"):
+            MainWindow._fetch_preview_messages(
+                window,
+                "芝士圆子",
+                "窗口中已经找不到的锚点|14:08",
+                preview,
+                "今天闵行区的天气，语音播报给我|14:09",
+            )
+
+        self.assertEqual(
+            [
+                "发语音告诉我",
+                "你在干嘛",
+                "画一张奥特曼给我看看",
+                "再发个可爱的表情包",
+                "今天闵行区的天气，语音播报给我",
+            ],
+            [message.content for message in accepted],
+        )
+
+    def test_preview_polling_pauses_while_a_reply_is_active(self):
         calls = []
         window = SimpleNamespace(
             auto_chat_running=True,
@@ -160,6 +214,7 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             _preview_timeout_count=0,
             _original_image_fetch_count=0,
             _auto_chat_pending={"contact": 1},
+            _auto_chat_active_tasks={"task"},
             gateway=SimpleNamespace(
                 connected=True,
                 call=lambda *args: calls.append(args) or GatewayResult(True, []),
@@ -171,7 +226,142 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
 
         MainWindow._poll_auto_chat_previews(window)
 
+        self.assertEqual([], calls)
+
+    def test_recovery_keeps_queued_message_out_of_gateway_until_reconnected(self):
+        incoming = IncomingMessage("芝士圆子", "对方", "排队消息", "2026-08-12T14:09:00")
+        queue = deque([incoming])
+        window = SimpleNamespace(
+            _auto_chat_queues={"芝士圆子": queue},
+            auto_chat_running=True,
+            _server_auto_recovery_in_progress=True,
+            gateway=SimpleNamespace(connected=False),
+        )
+
+        MainWindow._process_next_auto_message(window, "芝士圆子")
+
+        self.assertEqual([incoming], list(queue))
+
+    def test_automatic_send_waits_for_gateway_reconnect(self):
+        calls = []
+        results = []
+        gateway = SimpleNamespace(
+            connected=False,
+            call=lambda *args: calls.append(args) or GatewayResult(True, True),
+        )
+        incoming = SimpleNamespace(chat_title="芝士圆子")
+        window = SimpleNamespace(
+            _auto_chat_session=7,
+            auto_chat_running=True,
+            _server_auto_recovery_in_progress=True,
+            gateway=gateway,
+            account="圆子",
+            _run_future=lambda value, callback: callback(value),
+        )
+
+        with patch("mybot_ui.app_v2.QTimer.singleShot") as scheduled:
+            MainWindow._run_auto_gateway_send(
+                window,
+                incoming,
+                7,
+                "SendMessage",
+                {"who": "芝士圆子", "message": "测试"},
+                results.append,
+            )
+
+        self.assertEqual([], calls)
+        self.assertEqual([], results)
+        callback = scheduled.call_args.args[1]
+        window._server_auto_recovery_in_progress = False
+        gateway.connected = True
+        callback()
         self.assertEqual(1, len(calls))
+        self.assertTrue(results[0].ok)
+
+    def test_preview_burst_is_deferred_until_active_work_finishes(self):
+        calls = []
+        incoming = IncomingMessage("芝士圆子", "对方", "新消息", "2026-08-12T12:00:00")
+        window = SimpleNamespace(
+            _preview_burst_fetches=set(),
+            _preview_burst_latest={},
+            _auto_chat_active_tasks={"image-task"},
+            gateway=SimpleNamespace(
+                call=lambda *args, **kwargs: calls.append((args, kwargs)) or object()
+            ),
+            account="圆子",
+            _run_future=lambda _value, _callback: None,
+        )
+
+        MainWindow._fetch_preview_messages(
+            window, "芝士圆子", "旧消息|11:59", incoming, "新消息|12:00"
+        )
+
+        self.assertEqual([], calls)
+        self.assertEqual("新消息|12:00", window._preview_burst_latest["芝士圆子"][2])
+        window._auto_chat_active_tasks.clear()
+        MainWindow._resume_deferred_preview_messages(window)
+        self.assertEqual(1, len(calls))
+
+    def test_deferred_preview_keeps_original_anchor_across_rapid_changes(self):
+        incoming_one = IncomingMessage(
+            "芝士圆子", "对方", "画一张奥特曼", "2026-08-12T13:02:20"
+        )
+        incoming_two = IncomingMessage(
+            "芝士圆子", "对方", "发一个表情包", "2026-08-12T13:02:21"
+        )
+        window = SimpleNamespace(
+            _preview_burst_fetches=set(),
+            _preview_burst_latest={},
+            _auto_chat_active_tasks={"active-task"},
+            account="圆子",
+        )
+
+        MainWindow._fetch_preview_messages(
+            window,
+            "芝士圆子",
+            "你在干嘛|13:02",
+            incoming_one,
+            "画一张奥特曼|13:02",
+        )
+        MainWindow._fetch_preview_messages(
+            window,
+            "芝士圆子",
+            "画一张奥特曼|13:02",
+            incoming_two,
+            "发一个表情包|13:02",
+        )
+
+        deferred = window._preview_burst_latest["芝士圆子"]
+        self.assertEqual("你在干嘛|13:02", deferred[0])
+        self.assertEqual("发一个表情包", deferred[1].content)
+        self.assertEqual("发一个表情包|13:02", deferred[2])
+
+    def test_preview_burst_timeout_recovers_before_accepting_message(self):
+        callbacks = []
+        recovered = []
+        accepted = []
+        incoming = IncomingMessage("芝士圆子", "对方", "新消息", "2026-08-12T12:00:00")
+        window = SimpleNamespace(
+            auto_chat_running=True,
+            _preview_burst_fetches=set(),
+            _preview_burst_latest={},
+            _auto_chat_active_tasks=set(),
+            gateway=SimpleNamespace(call=lambda *args, **kwargs: object()),
+            account="圆子",
+            _accept_auto_message=accepted.append,
+            _recover_stalled_server=recovered.append,
+            _run_future=lambda _value, callback: callbacks.append(callback),
+        )
+
+        MainWindow._fetch_preview_messages(
+            window, "芝士圆子", "旧消息|11:59", incoming, "新消息|12:00"
+        )
+        callbacks[0](GatewayResult(False, error="TimeoutError"))
+
+        self.assertEqual([], accepted)
+        self.assertEqual(["TimeoutError"], recovered)
+        self.assertEqual("新消息|12:00", window._preview_burst_latest["芝士圆子"][2])
+        self.assertEqual(set(), window._preview_burst_fetches)
 
     def test_preview_polling_pauses_while_group_metadata_is_scanning(self):
         calls = []
@@ -242,6 +432,61 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
 
         self.assertEqual(2, window._preview_timeout_count)
         self.assertEqual(["TimeoutError"], recovered)
+
+    def test_automatic_server_recovery_preserves_switch_and_queued_work(self):
+        def completed(value=None):
+            future = Future()
+            future.set_result(value)
+            return future
+
+        states = []
+        queue = deque(["queued-message"])
+        active = {"active-message"}
+        button = SimpleNamespace(
+            isEnabled=lambda: True,
+            setEnabled=lambda _enabled: None,
+        )
+        timer = SimpleNamespace(stop=lambda: None)
+        window = SimpleNamespace(
+            restart_server_button=button,
+            connect_button=button,
+            _server_auto_recovery_in_progress=True,
+            _resume_auto_chat_after_reconnect=True,
+            auto_chat_running=True,
+            account="圆子",
+            gateway=SimpleNamespace(
+                connected=True,
+                call=lambda *_args: completed(True),
+                disconnect=lambda: completed(True),
+            ),
+            _preview_timer=timer,
+            _auto_chat_session=9,
+            _auto_chat_pending={"芝士圆子": 1},
+            _auto_chat_active_tasks=active,
+            _auto_chat_queues={"芝士圆子": queue},
+            _auto_task_enqueued_at={"queued-message": 1.0},
+            _auto_task_started_at={"active-message": 2.0},
+            _group_metadata_waiting=deque(["metadata"]),
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
+            _server_executable=lambda: Path("Server.exe"),
+            statusBar=lambda: SimpleNamespace(showMessage=lambda *_args: None),
+            _append_chat=lambda *_args: None,
+            _set_auto_chat_ui_state=lambda state, count=0: states.append((state, count)),
+            _set_connection=lambda *_args: None,
+            _restart_server_worker=lambda *_args: GatewayResult(True, {"pid": 1}),
+            model_executor=SimpleNamespace(submit=lambda *_args: "restart-future"),
+            uri_input=SimpleNamespace(text=lambda: "ws://127.0.0.1:5177/ws"),
+            _run_future=lambda *_args: None,
+        )
+
+        with patch("mybot_ui.app_v2.Path.is_file", return_value=True):
+            MainWindow._restart_server(window, automatic=True)
+
+        self.assertTrue(window.auto_chat_running)
+        self.assertEqual(9, window._auto_chat_session)
+        self.assertEqual(["queued-message"], list(queue))
+        self.assertEqual({"active-message"}, active)
+        self.assertEqual([("recovering", 1)], states)
 
     def test_image_preview_fetches_original_instead_of_waiting_forever(self):
         fetched = []
@@ -1680,6 +1925,64 @@ class AutoChatModelRoutingTests(unittest.TestCase):
         self.assertEqual([("future", incoming, 7)], continued)
         self.assertEqual([("MyBot测试群2", "稍等，我去看一下")], remembered)
 
+    def test_realtime_weather_honors_explicit_voice_transport(self):
+        future = Future()
+        future.set_result("闵行区今天有阵雨，出门记得带伞")
+        incoming = SimpleNamespace(chat_title="芝士圆子", who="对方")
+        sent = []
+        window = SimpleNamespace(
+            _auto_chat_session=7,
+            auto_chat_running=True,
+            settings={"voice": {"enabled": True}},
+            _send_auto_voice=lambda message, session, text, full_reply: sent.append(
+                (message, session, text, full_reply)
+            ),
+        )
+
+        MainWindow._finish_auto_realtime_tool(
+            window,
+            future,
+            incoming,
+            7,
+            ReplyAction(ReplyKind.VOICE),
+        )
+
+        self.assertEqual(
+            [(incoming, 7, "闵行区今天有阵雨，出门记得带伞", "闵行区今天有阵雨，出门记得带伞")],
+            sent,
+        )
+
+    def test_realtime_result_waits_for_automatic_recovery_before_voice_send(self):
+        future = Future()
+        future.set_result("闵行区今天有阵雨")
+        incoming = SimpleNamespace(chat_title="芝士圆子", who="对方")
+        gateway = SimpleNamespace(connected=False)
+        sent = []
+        window = SimpleNamespace(
+            _auto_chat_session=7,
+            auto_chat_running=True,
+            _server_auto_recovery_in_progress=True,
+            gateway=gateway,
+            settings={"voice": {"enabled": True}},
+            _send_auto_voice=lambda *_args: sent.append("voice"),
+        )
+
+        with patch("mybot_ui.app_v2.QTimer.singleShot") as scheduled:
+            MainWindow._finish_auto_realtime_tool(
+                window,
+                future,
+                incoming,
+                7,
+                ReplyAction(ReplyKind.VOICE),
+            )
+
+        self.assertEqual([], sent)
+        callback = scheduled.call_args.args[1]
+        window._server_auto_recovery_in_progress = False
+        gateway.connected = True
+        callback()
+        self.assertEqual(["voice"], sent)
+
     def test_model_delegate_marker_hands_original_message_to_codex(self):
         delegated = []
         future = Future()
@@ -1703,6 +2006,39 @@ class AutoChatModelRoutingTests(unittest.TestCase):
         )
 
         self.assertEqual([(incoming, 3, "model")], delegated)
+
+    def test_model_can_autonomously_choose_voice_for_a_normal_message(self):
+        future = Future()
+        future.set_result("<MYBOT_VOICE>这件事我想认真说给你听</MYBOT_VOICE>")
+        incoming = SimpleNamespace(
+            chat_title="芝士圆子",
+            who="对方",
+            content="你认真跟我说说",
+            image_base64="",
+        )
+        sent = []
+        window = SimpleNamespace(
+            _auto_chat_session=3,
+            auto_chat_running=True,
+            codex_enabled=SimpleNamespace(isChecked=lambda: True),
+            settings={"voice": {"enabled": True}},
+            _send_auto_voice=lambda message, session, text, full_reply: sent.append(
+                (message, session, text, full_reply)
+            ),
+        )
+
+        MainWindow._finish_auto_reply(
+            window,
+            future,
+            incoming,
+            3,
+            ReplyAction(ReplyKind.TEXT),
+        )
+
+        self.assertEqual(
+            [(incoming, 3, "这件事我想认真说给你听", "这件事我想认真说给你听")],
+            sent,
+        )
 
 
 if __name__ == "__main__":

@@ -58,9 +58,16 @@ class UpdateInfo:
 
 
 class UpdateManager:
-    def __init__(self, project_root: str | Path, current_version: str) -> None:
+    def __init__(
+        self,
+        project_root: str | Path,
+        current_version: str,
+        *,
+        prerelease: bool = False,
+    ) -> None:
         self.project_root = Path(project_root).resolve()
         self.current_version = str(SemanticVersion.parse(current_version))
+        self.prerelease = bool(prerelease)
         self.download_dir = self.project_root / "data" / "updates"
 
     def check(self) -> UpdateInfo:
@@ -109,7 +116,7 @@ class UpdateManager:
         return UpdateInfo(
             current_version=str(current),
             latest_version=str(latest),
-            update_available=latest > current,
+            update_available=latest > current or (self.prerelease and latest == current),
             release_url=str(payload.get("html_url", "")),
             release_notes=str(payload.get("body", "")),
             installer_name=installer_name,

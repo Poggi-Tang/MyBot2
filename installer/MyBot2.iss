@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "2.4.0"
+  #define MyAppVersion "2.5.0"
 #endif
 #ifndef SourceRoot
   #define SourceRoot ".."
@@ -8,7 +8,7 @@
 #define MyAppName "MyBot2"
 #define MyAppPublisher "Poggi-Tang"
 #define MyAppURL "https://github.com/Poggi-Tang/MyBot2"
-#define MyAppExeName "run.cmd"
+#define MyAppExeName "MyBot2.exe"
 
 [Setup]
 AppId={{6E1300B8-AB5D-45F9-8CF2-B5E9A193264D}
@@ -37,6 +37,7 @@ WizardStyle=modern
 SetupLogging=yes
 UninstallDisplayName=MyBot2 {#MyAppVersion}
 VersionInfoVersion={#MyAppVersion}.0
+SetupIconFile={#SourceRoot}\assets\MyBot2.ico
 
 [Types]
 Name: "recommended"; Description: "推荐安装"
@@ -60,6 +61,8 @@ Name: "{app}\logs"
 [Files]
 Source: "{#SourceRoot}\scripts\stop-mybot.ps1"; Flags: dontcopy
 Source: "{#SourceRoot}\main.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\build\launcher\MyBot2.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\run.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\run.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\setup.cmd"; DestDir: "{app}"; Flags: ignoreversion
@@ -73,22 +76,22 @@ Source: "{#SourceRoot}\VERSIONING.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\mybot_ui\*"; DestDir: "{app}\mybot_ui"; Excludes: "__pycache__\*,*.pyc"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\mybot_mcp\*"; DestDir: "{app}\mybot_mcp"; Excludes: "__pycache__\*,*.pyc"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SourceRoot}\scripts\*"; DestDir: "{app}\scripts"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceRoot}\scripts\*"; DestDir: "{app}\scripts"; Excludes: "__pycache__\*,*.pyc"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\build\runtime\server\*"; DestDir: "{app}\runtime\server"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\build\runtime\python\*"; DestDir: "{app}\runtime\python"; Components: python; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceRoot}\sdk\*"; DestDir: "{app}\sdk"; Components: sdkcatalog; Excludes: "**\bin\*,**\obj\*,**\logs\*,**\artifacts\*"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SourceRoot}\extensions\*"; DestDir: "{app}\extensions"; Components: abilities; Excludes: ".candidates\*"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SourceRoot}\codex\skills\*"; DestDir: "{app}\codex\skills"; Components: abilities; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceRoot}\extensions\*"; DestDir: "{app}\extensions"; Components: abilities; Excludes: ".candidates\*,__pycache__\*,*.pyc"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceRoot}\codex\skills\*"; DestDir: "{app}\codex\skills"; Components: abilities; Excludes: "__pycache__\*,*.pyc"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autodesktop}\MyBot2"; Filename: "{cmd}"; Parameters: "/d /c ""{app}\run.cmd"""; WorkingDir: "{app}"; Tasks: desktopicon
-Name: "{group}\MyBot2"; Filename: "{cmd}"; Parameters: "/d /c ""{app}\run.cmd"""; WorkingDir: "{app}"; Tasks: startmenuicon
+Name: "{autodesktop}\MyBot2"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\assets\MyBot2.ico"; Tasks: desktopicon
+Name: "{group}\MyBot2"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\assets\MyBot2.ico"; Tasks: startmenuicon
 Name: "{group}\卸载 MyBot2"; Filename: "{uninstallexe}"
 
 [Run]
-Filename: "{cmd}"; Parameters: "/d /c ""{app}\run.cmd"""; WorkingDir: "{app}"; Description: "启动 MyBot2"; Flags: nowait postinstall skipifsilent
-Filename: "{cmd}"; Parameters: "/d /c ""{app}\run.cmd"""; WorkingDir: "{app}"; Flags: nowait runhidden; Check: IsUpdateMode
+Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Description: "启动 MyBot2"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Flags: nowait; Check: IsUpdateMode
 
 [Code]
 var

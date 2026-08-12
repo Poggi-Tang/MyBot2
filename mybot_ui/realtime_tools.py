@@ -163,6 +163,10 @@ class RealtimeToolExecutor:
 def _weather_location(query: str) -> str:
     match = _WEATHER_SUBJECT.search(query)
     prefix = query[: match.start()] if match else query
+    # WeChat group mentions can contain a narrow/em space (U+2005) between
+    # the mentioned name and the actual request.  Remove those mention tokens
+    # before extracting the location so replies never echo ``@圆子``.
+    prefix = re.sub(r"^(?:@[^\s\u2005，,。！？!?]{1,20}[\s\u2005]+)+", "", prefix)
     prefix = re.sub(r"^[^:：]{1,20}[:：]\s*", "", prefix).strip(" ，,。！？!?：:")
     previous = None
     while prefix and prefix != previous:

@@ -8,6 +8,8 @@ from mybot_ui.auto_chat import (
     group_reply_trigger,
     incoming_dedupe_feature,
     infer_sticker_query,
+    model_reply_action,
+    model_reply_mode_instruction,
     model_sticker_request,
     parse_auto_reply_segments,
     requested_action,
@@ -155,6 +157,14 @@ class ReplyPlanningTests(unittest.TestCase):
 
     def test_voice_and_sticker_requests_are_selected(self):
         self.assertEqual(ReplyKind.VOICE, requested_action("用语音回复我").kind)
+        for text in (
+            "今天闵行区的天气，语音播报给我",
+            "把结果读给我听",
+            "念给我听",
+            "查完说给我听",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(ReplyKind.VOICE, requested_action(text).kind)
         sticker = requested_action("发一个捂脸表情")
         self.assertEqual(ReplyKind.STICKER, sticker.kind)
         self.assertEqual("捂脸", sticker.argument)
@@ -293,6 +303,45 @@ class ReplyPlanningTests(unittest.TestCase):
         self.assertEqual("", model_sticker_request("<MYBOT_STICKER>"))
         self.assertEqual("这狗", model_sticker_request("<MYBOT_STICKER:这狗>"))
         self.assertIsNone(model_sticker_request("给你一个 <MYBOT_STICKER>"))
+
+    def test_model_can_choose_reply_transport_with_strict_markers(self):
+        text_action, text = model_reply_action("我也觉得挺有意思")
+        voice_action, voice = model_reply_action(
+            "<MYBOT_VOICE>那我认真讲给你听</MYBOT_VOICE>"
+        )
+        sticker_action, sticker_text = model_reply_action("<MYBOT_STICKER:开心>")
+        image_action, image_text = model_reply_action("<MYBOT_IMAGE:窗边晒太阳的猫>")
+
+        self.assertEqual(ReplyKind.TEXT, text_action.kind)
+        self.assertEqual("我也觉得挺有意思", text)
+        self.assertEqual(ReplyKind.VOICE, voice_action.kind)
+        self.assertEqual("那我认真讲给你听", voice)
+        self.assertEqual(ReplyKind.STICKER, sticker_action.kind)
+        self.assertEqual("开心", sticker_action.argument)
+        self.assertEqual("", sticker_text)
+        self.assertEqual(ReplyKind.IMAGE, image_action.kind)
+        self.assertEqual("窗边晒太阳的猫", image_action.argument)
+        self.assertEqual("", image_text)
+
+    def test_reply_transport_markers_must_occupy_the_whole_reply(self):
+        action, content = model_reply_action(
+            "给你说一句 <MYBOT_VOICE>晚安</MYBOT_VOICE>"
+        )
+        self.assertEqual(ReplyKind.TEXT, action.kind)
+        self.assertIn("晚安", content)
+
+    def test_reply_mode_prompt_lists_capabilities_without_fixed_wording(self):
+        prompt = model_reply_mode_instruction(voice_enabled=True, codex_enabled=True)
+        self.assertIn("文字", prompt)
+        self.assertIn("<MYBOT_STICKER", prompt)
+        self.assertIn("<MYBOT_VOICE>", prompt)
+        self.assertIn("<MYBOT_IMAGE:", prompt)
+        self.assertIn("<MYBOT_DELEGATE_CODEX>", prompt)
+        self.assertIn("不是固定话术", prompt)
+
+        disabled = model_reply_mode_instruction(voice_enabled=False, codex_enabled=False)
+        self.assertIn("语音当前不可用", disabled)
+        self.assertIn("CLI 工具当前不可用", disabled)
 
     def test_unspecified_sticker_uses_recent_conversation_semantics(self):
         self.assertEqual(

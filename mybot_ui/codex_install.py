@@ -59,20 +59,54 @@ class CodexRuntimeManager:
         self.project_root = Path(project_root).resolve()
         self.data_root = self.project_root / "data" / "codex"
         self.runtime_dir = self.data_root / "runtime"
+        self.legacy_runtime_dir = self.project_root / "tools" / "codex"
         self.codex_home = self.data_root / "home"
+        self.project_skills_dir = self.project_root / ".agents" / "skills"
+        self._sync_project_skills()
+
+    def _sync_project_skills(self) -> None:
+        bundled = self.project_root / "codex" / "skills"
+        if not bundled.is_dir():
+            return
+        self.project_skills_dir.mkdir(parents=True, exist_ok=True)
+        for source in bundled.iterdir():
+            if source.is_dir() and (source / "SKILL.md").is_file():
+                shutil.copytree(
+                    source,
+                    self.project_skills_dir / source.name,
+                    dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                )
+
+    @property
+    def active_runtime_dir(self) -> Path:
+        if self._runtime_complete(self.runtime_dir):
+            return self.runtime_dir
+        if self._runtime_complete(self.legacy_runtime_dir):
+            return self.legacy_runtime_dir
+        return self.runtime_dir if self.runtime_dir.exists() else self.legacy_runtime_dir
 
     @property
     def executable(self) -> Path:
-        return self.runtime_dir / CODEX_EXECUTABLE_NAME
+        return self.active_runtime_dir / CODEX_EXECUTABLE_NAME
 
     @property
     def proxy_executable(self) -> Path:
-        return self.runtime_dir / CODEX_PROXY_NAME
+        return self.active_runtime_dir / CODEX_PROXY_NAME
+
+    @staticmethod
+    def _runtime_complete(root: Path) -> bool:
+        return all((root / name).is_file() for name in REQUIRED_RUNTIME_FILES)
 
     def status(self) -> CodexRuntimeStatus:
-        missing = [name for name in REQUIRED_RUNTIME_FILES if not (self.runtime_dir / name).is_file()]
+        runtime_files = {
+            CODEX_EXECUTABLE_NAME: self.executable,
+            CODEX_PROXY_NAME: self.proxy_executable,
+        }
+        missing = [name for name, path in runtime_files.items() if not path.is_file()]
         if missing:
-            error = "" if not self.runtime_dir.exists() else "安装不完整"
+            has_runtime = self.runtime_dir.exists() or self.legacy_runtime_dir.exists()
+            error = "安装不完整" if has_runtime else ""
             return CodexRuntimeStatus(False, error=error)
         try:
             version = self._cli_version(self.executable)

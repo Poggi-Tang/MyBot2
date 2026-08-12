@@ -6,12 +6,12 @@ import time
 import unittest
 from pathlib import Path
 
-from mybot_ui.app_v2 import MainWindow
+from mybot_ui.restart import restart_helper_command
 
 
 class ApplicationRestartTests(unittest.TestCase):
     def test_helper_waits_for_current_process_then_runs_canonical_entrypoint(self):
-        args = MainWindow._restart_application_helper(
+        args = restart_helper_command(
             4321,
             Path(r"C:\Projects\MyBot2"),
         )
@@ -38,10 +38,10 @@ class ApplicationRestartTests(unittest.TestCase):
                 [
                     "import os, subprocess",
                     "from pathlib import Path",
-                    "from mybot_ui.app_v2 import MainWindow",
+                    "from mybot_ui.restart import restart_helper_command",
                     f"root = Path({str(app_root)!r})",
                     "subprocess.Popen(",
-                    "    MainWindow._restart_application_helper(os.getpid(), root),",
+                    "    restart_helper_command(os.getpid(), root),",
                     "    cwd=str(root),",
                     "    stdin=subprocess.DEVNULL,",
                     "    stdout=subprocess.DEVNULL,",

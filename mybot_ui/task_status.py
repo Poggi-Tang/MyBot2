@@ -100,13 +100,18 @@ class TaskStatusPool:
             existing = self._items.get(task_id)
             if existing is None:
                 return None
+            if existing.state not in ACTIVE_TASK_STATES:
+                return existing
+            normalized_error = " ".join(str(error or "").split())[:300]
+            if not success and normalized_error.casefold() in {"timeouterror", "timeout"}:
+                normalized_error = f"{existing.stage}超时"
             item = replace(
                 existing,
                 state="completed" if success else "failed",
-                stage="已完成" if success else "失败",
+                stage="已完成" if success else existing.stage,
                 updated_at=timestamp,
                 finished_at=timestamp,
-                error=" ".join(str(error or "").split())[:300],
+                error=normalized_error,
             )
             self._items[task_id] = item
             self._trim_finished()

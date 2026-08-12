@@ -63,6 +63,48 @@ class CodexRuntimeManagerTests(unittest.TestCase):
             self.assertFalse(manager.status().installed)
             self.assertEqual("", manager.status().error)
 
+    def test_project_legacy_runtime_is_still_recognized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = CodexRuntimeManager(directory)
+            manager.legacy_runtime_dir.mkdir(parents=True)
+            (manager.legacy_runtime_dir / CODEX_EXECUTABLE_NAME).write_bytes(b"codex")
+            (manager.legacy_runtime_dir / CODEX_PROXY_NAME).write_bytes(b"proxy")
+
+            with patch.object(manager, "_cli_version", return_value="0.147.0"):
+                status = manager.status()
+
+            self.assertTrue(status.installed)
+            self.assertEqual("0.147.0", status.version)
+            self.assertEqual(
+                manager.legacy_runtime_dir / CODEX_EXECUTABLE_NAME,
+                manager.executable,
+            )
+            self.assertEqual(
+                manager.legacy_runtime_dir / CODEX_PROXY_NAME,
+                manager.proxy_executable,
+            )
+
+    def test_new_runtime_takes_priority_over_project_legacy_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = CodexRuntimeManager(directory)
+            manager.runtime_dir.mkdir(parents=True)
+            manager.legacy_runtime_dir.mkdir(parents=True)
+            for root in (manager.runtime_dir, manager.legacy_runtime_dir):
+                (root / CODEX_EXECUTABLE_NAME).write_bytes(b"codex")
+                (root / CODEX_PROXY_NAME).write_bytes(b"proxy")
+
+            self.assertEqual(
+                manager.runtime_dir / CODEX_EXECUTABLE_NAME,
+                manager.executable,
+            )
+            self.assertEqual(
+                manager.runtime_dir / CODEX_PROXY_NAME,
+                manager.proxy_executable,
+            )
+
+            (manager.runtime_dir / CODEX_PROXY_NAME).unlink()
+            self.assertEqual(manager.legacy_runtime_dir, manager.active_runtime_dir)
+
     def test_release_metadata_locks_assets_to_the_same_official_tag(self):
         proxy_digest = "1" * 64
         metadata = {

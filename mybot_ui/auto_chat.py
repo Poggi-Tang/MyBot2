@@ -19,6 +19,14 @@ INCOMING_DEDUPE_TTL_SECONDS = 10 * 60.0
 MAX_TRACKED_MESSAGES_PER_CONVERSATION = 1_000
 FORBIDDEN_AUTO_REPLY_CHARACTERS = "~。"
 MODEL_STICKER_PATTERN = re.compile(r"^<MYBOT_STICKER(?::([^>]{0,24}))?>$", re.IGNORECASE)
+MODEL_VOICE_PATTERN = re.compile(
+    r"^<MYBOT_VOICE>\s*(.+?)\s*</MYBOT_VOICE>$",
+    re.IGNORECASE | re.DOTALL,
+)
+MODEL_IMAGE_PATTERN = re.compile(
+    r"^<MYBOT_IMAGE(?::([^>]{1,500}))?>$",
+    re.IGNORECASE | re.DOTALL,
+)
 TRAILING_MODEL_ARTIFACT_PATTERN = re.compile(
     r"\s+(?=[a-f0-9]{6,12}$)(?=[a-f0-9]*[a-f])(?=[a-f0-9]*\d)[a-f0-9]{6,12}$",
     re.IGNORECASE,
@@ -342,7 +350,17 @@ def requested_action(text: str) -> ReplyAction:
         if prompt:
             return ReplyAction(ReplyKind.IMAGE, prompt)
 
-    if "语音" in value and any(word in value for word in ("发", "用", "回复", "回我", "说")):
+    voice_phrases = (
+        "语音播报",
+        "语音播放",
+        "读给我听",
+        "念给我听",
+        "说给我听",
+    )
+    if any(phrase in value for phrase in voice_phrases) or (
+        "语音" in value
+        and any(word in value for word in ("发", "用", "回复", "回我", "说", "播报", "播放"))
+    ):
         return ReplyAction(ReplyKind.VOICE)
 
     sticker_action = _requested_sticker_action(value)
@@ -464,6 +482,57 @@ def sticker_selection_candidates(items: list[dict], query: str) -> list[tuple[in
 def model_sticker_request(text: str) -> str | None:
     match = MODEL_STICKER_PATTERN.fullmatch(str(text).strip())
     return match.group(1).strip() if match and match.group(1) else ("" if match else None)
+
+
+def model_reply_action(text: str) -> tuple[ReplyAction, str]:
+    """Parse the model's transport decision while keeping plain text compatible."""
+    value = str(text).strip()
+    sticker = model_sticker_request(value)
+    if sticker is not None:
+        return ReplyAction(ReplyKind.STICKER, sticker), ""
+    voice = MODEL_VOICE_PATTERN.fullmatch(value)
+    if voice is not None:
+        content = voice.group(1).strip()
+        if content:
+            return ReplyAction(ReplyKind.VOICE), content
+    image = MODEL_IMAGE_PATTERN.fullmatch(value)
+    if image is not None:
+        prompt = (image.group(1) or "").strip()
+        if prompt:
+            return ReplyAction(ReplyKind.IMAGE, prompt), ""
+    return ReplyAction(ReplyKind.TEXT), value
+
+
+def model_reply_mode_instruction(*, voice_enabled: bool, codex_enabled: bool) -> str:
+    """Describe available reply transports without prescribing conversational wording."""
+    modes = [
+        "先理解当前消息、最近对话、人设和关系，再同时决定回复内容与本次发送方式。",
+        "可用方式及严格输出格式：",
+        "1. 文字：直接输出自然回复；需要分成多条时仅用 <MYBOT_SPLIT> 分隔。",
+        "2. 收藏或自定义表情包：仅输出 <MYBOT_STICKER>；需要指定风格时仅输出 <MYBOT_STICKER:关键词>。",
+    ]
+    if voice_enabled:
+        modes.append(
+            "3. 语音：仅输出 <MYBOT_VOICE>适合直接说出口的完整回复</MYBOT_VOICE>。"
+        )
+    else:
+        modes.append("3. 语音当前不可用，不得选择语音。")
+    modes.append(
+        "4. 生成新图片：仅在对方确实想要生成图片时输出 <MYBOT_IMAGE:完整画面要求>。"
+    )
+    if codex_enabled:
+        modes.append(
+            "5. 工具任务：需要实时信息、联网、代码、文件、终端、调试或研究时，仅输出 <MYBOT_DELEGATE_CODEX>。"
+        )
+    else:
+        modes.append("5. CLI 工具当前不可用，不得选择工具任务。")
+    modes.extend((
+        "选择原则：默认使用文字；语音只在对方明确或含蓄想听语音，或当前情绪和内容明显更适合说出来时使用；"
+        "表情包只在单个表情比文字更自然时使用，不要为了展示能力而使用；生成图片和工具任务必须有真实意图。",
+        "所有控制标记都必须独占整个回复，不得与解释或其他文字混合。这里规定的是输出格式，不是固定话术，"
+        "实际措辞继续遵守当前人设、记忆和对话关系。",
+    ))
+    return "\n".join(modes)
 
 
 def infer_sticker_query(request: str, transcript: str) -> str:

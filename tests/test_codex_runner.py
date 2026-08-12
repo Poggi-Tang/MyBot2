@@ -95,11 +95,15 @@ class CodexRunnerTests(unittest.TestCase):
             )
             self.assertTrue(any("register_output_file" in value for value in initial))
             self.assertIn("mcp_servers.mybot.tool_timeout_sec=5", initial)
+            self.assertIn("mcp_servers.autowx.enabled=true", initial)
+            self.assertTrue(any("autowx_mcp.server" in value for value in initial))
+            self.assertTrue(any("call_sdk_function" in value for value in initial))
             self.assertIn('model_reasoning_effort="low"', initial)
             enabled_tools = next(value for value in initial if "enabled_tools=" in value)
             self.assertNotIn("get_task_context", enabled_tools)
             self.assertNotIn("get_capabilities", enabled_tools)
             self.assertTrue(any("PYTHONUTF8" in value for value in initial))
+            self.assertIn("$autowx-strategyd", runner._initial_prompt("任务", "", ""))
 
     def test_probe_uses_ephemeral_project_run(self):
         with tempfile.TemporaryDirectory() as directory:

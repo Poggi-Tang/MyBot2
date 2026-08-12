@@ -9,6 +9,10 @@ $appRoot = Split-Path -Parent $PSScriptRoot
 $buildRoot = Join-Path $appRoot "build\runtime"
 $pythonRoot = Join-Path $buildRoot "python"
 $serverRoot = Join-Path $buildRoot "server"
+$launcherRoot = Join-Path $appRoot "build\launcher"
+$pyInstallerRoot = Join-Path $appRoot "build\pyinstaller"
+$launcherVersionPath = Join-Path $pyInstallerRoot "version.txt"
+$iconPath = Join-Path $appRoot "assets\MyBot2.ico"
 $distRoot = Join-Path $appRoot "dist"
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
@@ -18,7 +22,27 @@ if ($Version -notmatch '^2\.\d+\.\d+$') {
     throw "Installer version must use 2.x.x: $Version"
 }
 
-New-Item -ItemType Directory -Force -Path $buildRoot, $distRoot | Out-Null
+New-Item -ItemType Directory -Force -Path $buildRoot, $launcherRoot, $pyInstallerRoot, $distRoot | Out-Null
+
+& python (Join-Path $appRoot "scripts\generate-app-icon.py") `
+    (Join-Path $appRoot "assets\logo.svg") $iconPath
+if ($LASTEXITCODE -ne 0) { throw "Application icon generation failed." }
+& python (Join-Path $appRoot "scripts\generate_windows_version.py") `
+    $Version $launcherVersionPath
+if ($LASTEXITCODE -ne 0) { throw "Launcher version resource generation failed." }
+
+python -m pip install --disable-pip-version-check -r (Join-Path $appRoot "requirements-build.txt")
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller installation failed." }
+python -m PyInstaller `
+    --noconfirm --clean --onefile --windowed `
+    --name MyBot2 `
+    --icon $iconPath `
+    --version-file $launcherVersionPath `
+    --distpath $launcherRoot `
+    --workpath $pyInstallerRoot `
+    --specpath $pyInstallerRoot `
+    (Join-Path $appRoot "launcher.py")
+if ($LASTEXITCODE -ne 0) { throw "MyBot2 launcher compilation failed." }
 
 if (-not $SkipServerPublish) {
     if (Test-Path -LiteralPath $serverRoot) { Remove-Item -LiteralPath $serverRoot -Recurse -Force }

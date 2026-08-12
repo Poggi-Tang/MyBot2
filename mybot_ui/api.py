@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ctypes
 import json
+import os
+import sqlite3
 import threading
 import time
 import uuid
@@ -12,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .operation_log import operations
+from .outgoing_echo import OutgoingEchoJournal, default_outgoing_echo_path
 
 try:
     import websockets
@@ -20,6 +24,50 @@ except ImportError:  # pragma: no cover - dependency is declared in requirements
 
 
 DEFAULT_WEBSOCKET_MAX_MESSAGE_BYTES = 64 * 1024 * 1024
+SDK_COMMAND_MUTEX_NAME = "Local\\MyBot2.WeChatSdkCommand"
+
+
+class SdkCommandMutex:
+    """Serialize SDK commands across MyBot and standalone MCP processes."""
+
+    def __init__(self, name: str = SDK_COMMAND_MUTEX_NAME) -> None:
+        self._fallback = threading.Lock()
+        self._handle = None
+        if os.name == "nt":
+            handle = ctypes.windll.kernel32.CreateMutexW(None, False, name)
+            if not handle:
+                raise OSError(ctypes.get_last_error(), "CreateMutexW failed")
+            self._handle = handle
+
+    def acquire(self) -> None:
+        if self._handle is None:
+            self._fallback.acquire()
+            return
+        result = ctypes.windll.kernel32.WaitForSingleObject(self._handle, 0xFFFFFFFF)
+        if result not in {0x00000000, 0x00000080}:  # acquired or abandoned
+            raise OSError(ctypes.get_last_error(), f"WaitForSingleObject failed: {result}")
+
+    def try_acquire(self) -> bool:
+        if self._handle is None:
+            return self._fallback.acquire(blocking=False)
+        result = ctypes.windll.kernel32.WaitForSingleObject(self._handle, 0)
+        if result in {0x00000000, 0x00000080}:
+            return True
+        if result == 0x00000102:  # timeout
+            return False
+        raise OSError(ctypes.get_last_error(), f"WaitForSingleObject failed: {result}")
+
+    def release(self) -> None:
+        if self._handle is None:
+            self._fallback.release()
+            return
+        if not ctypes.windll.kernel32.ReleaseMutex(self._handle):
+            raise OSError(ctypes.get_last_error(), "ReleaseMutex failed")
+
+    def close(self) -> None:
+        if self._handle is not None:
+            ctypes.windll.kernel32.CloseHandle(self._handle)
+            self._handle = None
 
 
 def command_timeout(function: str) -> int:
@@ -62,8 +110,11 @@ class Gateway:
         self._ready = threading.Event()
         self._ws = None
         self._pending: dict[str, asyncio.Future[str]] = {}
+        self._command_lock: asyncio.Lock | None = None
+        self._process_command_lock = SdkCommandMutex()
         self._receiver = None
         self._listeners: list[Callable[[dict[str, Any]], None]] = []
+        self._outgoing_echo_journal = OutgoingEchoJournal(default_outgoing_echo_path())
         self._thread.start()
         self._ready.wait(timeout=2)
 
@@ -80,6 +131,9 @@ class Gateway:
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread.is_alive():
             self._thread.join(timeout=2)
+        process_lock = getattr(self, "_process_command_lock", None)
+        if process_lock is not None:
+            process_lock.close()
 
     def add_listener(self, callback: Callable[[dict[str, Any]], None]) -> None:
         self._listeners.append(callback)
@@ -126,10 +180,15 @@ class Gateway:
                 max_size=self.max_message_bytes,
             )
             self._receiver = asyncio.create_task(self._recv_loop())
-            pending = asyncio.get_running_loop().create_future()
-            self._pending[request_id] = pending
-            await self._ws.send(json.dumps({"type": "global", "data": "", "request_id": request_id}))
-            raw = await asyncio.wait_for(pending, timeout=5)
+            process_lock = self._get_process_command_lock()
+            await self._acquire_process_command_lock(process_lock)
+            try:
+                pending = asyncio.get_running_loop().create_future()
+                self._pending[request_id] = pending
+                await self._ws.send(json.dumps({"type": "global", "data": "", "request_id": request_id}))
+                raw = await asyncio.wait_for(pending, timeout=5)
+            finally:
+                process_lock.release()
             self.clients = json.loads(raw) if isinstance(raw, str) else list(raw)
             self.clients = self.clients or ["未识别账号"]
             self.demo_mode = False
@@ -159,6 +218,7 @@ class Gateway:
             if self._ws:
                 await self._ws.close()
                 self._ws = None
+            self._fail_pending(ConnectionError("WebSocket 已断开"))
             operations.finish(span, success=True)
             return GatewayResult(True)
         except Exception as exc:
@@ -184,11 +244,61 @@ class Gateway:
                     listener(response)
                 operations.event("gateway", "WebSocketEvent", response)
         except Exception as exc:
+            self.connected = False
+            self._fail_pending(ConnectionError(f"WebSocket 接收已停止：{exc}"))
             operations.event("gateway", "WebSocketReceiverError", {"error": f"{type(exc).__name__}: {exc}"})
             for listener in self._listeners:
                 listener({"type": "connection_error", "data": str(exc)})
 
     async def _call(
+        self,
+        account: str,
+        function: str,
+        options: Any = "",
+        *,
+        timeout_seconds: int | None = None,
+    ) -> GatewayResult:
+        # The SDK drives one WeChat UI window and cannot safely execute UIA
+        # commands concurrently. Queue commands on this connection so polling,
+        # sticker scans and media sends cannot deadlock each other. Waiting for
+        # the queue deliberately does not consume the command's own timeout.
+        lock = getattr(self, "_command_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._command_lock = lock
+        queued_at = time.perf_counter()
+        async with lock:
+            queue_ms = round((time.perf_counter() - queued_at) * 1000, 3)
+            if queue_ms >= 50:
+                operations.event("gateway", "CommandDequeued", {
+                    "function": function,
+                    "queue_ms": queue_ms,
+                })
+            process_lock = self._get_process_command_lock()
+            await self._acquire_process_command_lock(process_lock)
+            try:
+                return await self._call_serialized(
+                    account,
+                    function,
+                    options,
+                    timeout_seconds=timeout_seconds,
+                )
+            finally:
+                process_lock.release()
+
+    def _get_process_command_lock(self) -> SdkCommandMutex:
+        process_lock = getattr(self, "_process_command_lock", None)
+        if process_lock is None:
+            process_lock = SdkCommandMutex()
+            self._process_command_lock = process_lock
+        return process_lock
+
+    @staticmethod
+    async def _acquire_process_command_lock(process_lock: SdkCommandMutex) -> None:
+        while not process_lock.try_acquire():
+            await asyncio.sleep(0.02)
+
+    async def _call_serialized(
         self,
         account: str,
         function: str,
@@ -204,10 +314,14 @@ class Gateway:
             operation_id=request_id,
             details={"account": account, "options": options, "timeout_seconds": timeout_seconds},
         )
-        if self.demo_mode or not self.connected:
+        if self.demo_mode:
             value = self._demo_value(function, options)
             operations.finish(span, success=True, result=value, details={"demo_mode": True})
             return GatewayResult(True, value)
+        if not self.connected or self._ws is None:
+            result = GatewayResult(False, error="WebSocket Server 未连接")
+            operations.finish(span, success=False, error=result.error)
+            return result
         package = {
             "request_id": request_id,
             "func_Name": function,
@@ -223,18 +337,62 @@ class Gateway:
             if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
                 result = GatewayResult(True, value.strip().lower() == "true")
                 operations.finish(span, success=True, result=result.value)
+                self._record_outgoing_echo(function, options, result)
                 return result
             try:
                 result = GatewayResult(True, json.loads(value))
             except (TypeError, json.JSONDecodeError):
                 result = GatewayResult(True, value)
             operations.finish(span, success=True, result=result.value)
+            self._record_outgoing_echo(function, options, result)
             return result
         except Exception as exc:
             self._pending.pop(request_id, None)
             result = GatewayResult(False, error=str(exc) or type(exc).__name__)
             operations.finish(span, success=False, error=result.error)
             return result
+
+    def _record_outgoing_echo(
+        self,
+        function: str,
+        options: Any,
+        result: GatewayResult,
+    ) -> None:
+        journal = getattr(self, "_outgoing_echo_journal", None)
+        if journal is None or not result.ok or result.value is False:
+            return
+        if isinstance(options, str):
+            try:
+                payload = json.loads(options)
+            except json.JSONDecodeError:
+                payload = {}
+        else:
+            payload = options if isinstance(options, dict) else {}
+        conversation = str(payload.get("who") or "").strip()
+        if function == "SendMessage":
+            content = str(payload.get("message") or "").strip()
+            kind = "text"
+        elif function == "SendVoiceMessage":
+            content = "[语音]"
+            kind = "voice"
+        elif function == "SendFile":
+            content = "[图片]"
+            kind = "media"
+        else:
+            return
+        try:
+            journal.record(conversation, content, kind=kind)
+        except (OSError, sqlite3.Error):
+            # Echo journaling is defensive and must never turn a successful
+            # WeChat send into a failed gateway result.
+            return
+
+    def _fail_pending(self, error: Exception) -> None:
+        pending_items = tuple(self._pending.items())
+        self._pending.clear()
+        for _request_id, pending in pending_items:
+            if not pending.done():
+                pending.set_exception(error)
 
     def _demo_value(self, function: str, options: Any) -> Any:
         if function in {"GetAllConversations", "GetVisibleConversationTitles"}:

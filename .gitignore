@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .vs/
 .vscode/
+.agents/
 *.lscache
 artifacts/
 build/

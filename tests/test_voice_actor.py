@@ -77,6 +77,20 @@ class VoiceActorTests(unittest.TestCase):
         with self.assertRaisesRegex(VoicePerformanceError, "改写"):
             parse_voice_performance(response, "原回复")
 
+    def test_parser_accepts_punctuation_only_change_and_restores_original(self):
+        response = json.dumps({"segments": [
+            {"text": "宝宝，", "emotion": "affection"},
+            {"text": "我不能瞎报给你呀。", "emotion": "helplessness"},
+        ]}, ensure_ascii=False)
+
+        plan = parse_voice_performance(response, "宝宝，我不能瞎报给你呀")
+
+        self.assertEqual("宝宝，我不能瞎报给你呀", "".join(
+            segment.text for segment in plan.segments
+        ))
+        self.assertEqual("宝宝，", plan.segments[0].text)
+        self.assertEqual("我不能瞎报给你呀", plan.segments[1].text)
+
     def test_parser_removes_unlicensed_sfx_and_unknown_tags(self):
         response = json.dumps({"segments": [{
             "text": "我知道了。",

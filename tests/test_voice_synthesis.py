@@ -50,12 +50,12 @@ class VoiceSynthesisTests(unittest.TestCase):
     def test_navigation_order_matches_product_structure(self):
         self.assertEqual(
             (
-                "对话配置",
-                "记忆管理",
-                "功能列表",
-                "快捷能力",
-                "测试模块",
-                "系统配置",
+                "状态",
+                "知识库",
+                "能力",
+                "MCP",
+                "Skill",
+                "设置",
             ),
             NAVIGATION_TITLES,
         )

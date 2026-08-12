@@ -28,6 +28,20 @@ class TaskStatusPoolTests(unittest.TestCase):
         self.assertEqual("自动聊天已停止", item.error)
         self.assertEqual(3, item.elapsed())
 
+    def test_timeout_keeps_failed_stage_and_late_callback_cannot_overwrite_it(self):
+        pool = TaskStatusPool()
+        pool.enqueue("one", conversation="测试群", sender="甲", request="画猫", now=10)
+        pool.update(
+            "one", state="sending", stage="发送图片", kind="微信发送", now=20
+        )
+        pool.finish("one", success=False, error="TimeoutError", now=40)
+        pool.finish("one", success=False, error="自动聊天会话已停止", now=41)
+
+        item = pool.snapshots()[0]
+        self.assertEqual("发送图片", item.stage)
+        self.assertEqual("发送图片超时", item.error)
+        self.assertEqual(30, item.elapsed())
+
     def test_trims_only_finished_history(self):
         pool = TaskStatusPool(max_finished=2)
         for index in range(4):
