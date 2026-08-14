@@ -99,7 +99,7 @@ class CodexRunnerTests(unittest.TestCase):
             self.assertIn("mcp_servers.autowx.enabled=true", initial)
             self.assertTrue(any("autowx_mcp.server" in value for value in initial))
             self.assertTrue(any("call_sdk_function" in value for value in initial))
-            self.assertIn('model_reasoning_effort="low"', initial)
+            self.assertIn('model_reasoning_effort="high"', initial)
             enabled_tools = next(value for value in initial if "enabled_tools=" in value)
             self.assertNotIn("get_task_context", enabled_tools)
             self.assertNotIn("get_capabilities", enabled_tools)

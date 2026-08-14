@@ -95,8 +95,10 @@ class AutoWxMcpTests(unittest.TestCase):
         searched = tool_value(call_tool(self.service, "list_functions", {"query": "SendMessage"}))
         self.assertEqual(1, searched["total"])
         self.assertEqual("SendMessage", searched["functions"][0]["function"])
+        self.assertEqual("text", searched["functions"][0]["action_type"])
         schema = tool_value(call_tool(self.service, "get_function_schema", {"function": "SendMessage"}))
         self.assertEqual(["who", "message"], schema["required"])
+        self.assertEqual("text", schema["action_type"])
         self.assertTrue(schema["requires_confirmation"])
 
     def test_unknown_and_incomplete_calls_are_rejected(self):
@@ -123,12 +125,12 @@ class AutoWxMcpTests(unittest.TestCase):
         self.assertIn("who must be a string", invalid_string["error"]["message"])
         self.assertIn("files must be an array", invalid_list["error"]["message"])
 
-    def test_listener_lifecycle_is_reserved_for_mybot(self):
+    def test_legacy_dotnet_listener_is_not_allowlisted(self):
         response = call_tool(self.service, "plan_function_call", {
             "function": "PauseMessageListener",
             "arguments": {},
         })
-        self.assertIn("listener lifecycle is owned by MyBot", response["error"]["message"])
+        self.assertIn("SDK function is not allowlisted", response["error"]["message"])
 
     def test_task_binding_limits_non_admin_to_originating_conversation(self):
         project_root = Path(__file__).resolve().parent.parent

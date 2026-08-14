@@ -29,12 +29,13 @@ class ModelConfig:
     api_key: str = ""
     system_prompt: str = "你是一个自然、简洁、有帮助的微信聊天助手。不要声称自己正在操作电脑。"
     temperature: float = 0.7
+    reasoning_effort: str = ""
 
 
 @dataclass(frozen=True)
 class ImageConfig:
     base_url: str = "https://api.openai.com"
-    model: str = "gpt-image-1.5"
+    model: str = "gpt-image-2"
     api_key: str = ""
     size: str = "1024x1024"
 
@@ -217,7 +218,11 @@ class ChatModelClient:
                 content = ((data.get("message") or {}).get("content") or "").strip()
             else:
                 endpoint = self._openai_endpoint(config.base_url, "/chat/completions")
-                payload = {"model": config.model, "messages": messages, "temperature": config.temperature}
+                payload = {"model": config.model, "messages": messages}
+                if config.reasoning_effort.strip():
+                    payload["reasoning_effort"] = config.reasoning_effort.strip()
+                else:
+                    payload["temperature"] = config.temperature
                 data = self._request_json("POST", endpoint, payload, config.api_key, timeout=timeout)
                 choices = data.get("choices") or []
                 content = (((choices[0] if choices else {}).get("message") or {}).get("content") or "").strip()

@@ -9,6 +9,30 @@ $appRoot = $PSScriptRoot
 $configPath = Join-Path $appRoot "config.json"
 $installOptionsPath = Join-Path $appRoot "install-options.ini"
 
+function Test-MyBotAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (-not $PrepareOnly -and -not (Test-MyBotAdministrator)) {
+    $elevatedArguments = @(
+        "-NoProfile"
+        "-ExecutionPolicy"
+        "Bypass"
+        "-File"
+        ('"{0}"' -f $PSCommandPath)
+    )
+    if ($SkipServer) { $elevatedArguments += "-SkipServer" }
+    if ($NoEnvironmentCheck) { $elevatedArguments += "-NoEnvironmentCheck" }
+    Start-Process `
+        -FilePath "powershell.exe" `
+        -ArgumentList $elevatedArguments `
+        -WorkingDirectory $appRoot `
+        -Verb RunAs | Out-Null
+    return
+}
+
 function Resolve-MyBotPython {
     $candidates = @(
         (Join-Path $appRoot "runtime\python\python.exe"),
@@ -137,6 +161,9 @@ if ([string]::IsNullOrWhiteSpace($serverExe)) {
 }
 if (-not (Test-Path -LiteralPath $serverExe)) {
     throw "Server.exe is not built: $serverExe"
+}
+if (-not [IO.Path]::GetFileName($serverExe).Equals("Server.exe", [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to launch a non-Server executable: $serverExe"
 }
 $webSocketReady = Wait-WebSocketEndpoint -Uri $uri -TimeoutSeconds 2
 if (-not $webSocketReady -and $SkipServer) {

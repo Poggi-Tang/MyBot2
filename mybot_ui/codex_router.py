@@ -54,6 +54,11 @@ _LOCAL_MEDIA_PATTERN = re.compile(
     r"(?:发|发送|生成|画|做).{0,12}(?:图片|照片|表情|表情包|语音)",
     re.IGNORECASE,
 )
+_MOMENTS_TASK_PATTERN = re.compile(
+    r"(?:(?:发|发布|代发|上传|同步).{0,20}朋友圈|朋友圈.{0,20}(?:发|发布|代发|上传|同步)|"
+    r"朋友圈.{0,20}(?:配文|文案|宣传语))",
+    re.IGNORECASE,
+)
 MODEL_DELEGATE_MARKER = "<MYBOT_DELEGATE_CODEX>"
 MODEL_DELEGATE_INSTRUCTION = (
     "你可以把需要实际工具的任务交给后台 Codex。若当前请求需要实时或最新信息、联网查询、"
@@ -69,6 +74,8 @@ class CodexTaskRouter:
         text = content.strip()
         if not text or len(text) > 12_000:
             return False
+        if _MOMENTS_TASK_PATTERN.search(text):
+            return True
         if _LOCAL_MEDIA_PATTERN.search(text):
             return False
         return bool(

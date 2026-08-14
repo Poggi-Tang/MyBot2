@@ -1,32 +1,44 @@
-import json
 import unittest
+from pathlib import Path
 
-from mybot_ui.catalog import build_options
+from mybot_ui.catalog import TOOL_MAP
 
 
 class ListenerOptionsTests(unittest.TestCase):
-    def test_read_conversation_monitoring_can_be_enabled(self) -> None:
-        payload = build_options(
+    def test_legacy_dotnet_message_listener_is_not_catalogued(self) -> None:
+        legacy = {
             "AddMessageListener",
-            {
-                "targets": ["芝士圆子"],
-                "open": False,
-                "monitor_read_conversations": True,
-                "file_save_directory": "F:/MyBot/data/attachments",
-            },
+            "PauseMessageListener",
+            "ResumeMessageListener",
+            "AddListeningFriend",
+            "RemoveListeningFriend",
+        }
+        self.assertTrue(legacy.isdisjoint(TOOL_MAP))
+
+    def test_server_has_no_dotnet_message_listener_or_quote_entry(self) -> None:
+        project_root = Path(__file__).resolve().parent.parent
+        relative = Path("WeChatAuto4_X/WebSocketServer/Server/WebSockets/MessageHandler.cs")
+        candidates = (
+            project_root / "sdk" / relative,
+            project_root.parent / "wechatautosdk" / relative,
         )
+        handler = next((path for path in candidates if path.is_file()), None)
+        self.assertIsNotNone(handler, "MessageHandler.cs is missing from both supported layouts")
+        source = handler.read_text(encoding="utf-8")
+        for function in (
+            "AddMessageListener",
+            "PauseMessageListener",
+            "ResumeMessageListener",
+            "AddListeningFriend",
+            "RemoveListeningFriend",
+        ):
+            self.assertNotIn(f'case "{function}"', source)
+        self.assertNotIn("DeserializeObject<ChatRefer>", source)
 
-        options = json.loads(payload["options"])
-        self.assertTrue(options["monitor_read_conversations"])
-        self.assertTrue(options["fetch_image"])
-        self.assertTrue(options["fetch_file"])
-        self.assertEqual("F:/MyBot/data/attachments", options["file_save_directory"])
+    def test_autowx_and_mybot_share_the_fixed_gateway_server(self) -> None:
+        from autowx_mcp.server import DEFAULT_GATEWAY_URL
 
-    def test_read_conversation_monitoring_is_off_by_default(self) -> None:
-        payload = build_options("AddMessageListener", {"targets": ["芝士圆子"]})
-
-        options = json.loads(payload["options"])
-        self.assertFalse(options["monitor_read_conversations"])
+        self.assertEqual("ws://127.0.0.1:5177/ws", DEFAULT_GATEWAY_URL)
 
 
 if __name__ == "__main__":

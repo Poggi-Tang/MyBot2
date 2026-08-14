@@ -1,6 +1,7 @@
 import faulthandler
 import ctypes
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -20,6 +21,22 @@ from mybot_ui.tray import TrayController
 
 
 _DIAGNOSTIC_STREAM = None
+
+
+def relaunch_as_administrator_if_needed() -> int | None:
+    if sys.platform != "win32" or bool(ctypes.windll.shell32.IsUserAnAdmin()):
+        return None
+    script = Path(__file__).resolve()
+    parameters = subprocess.list2cmdline([str(script), *sys.argv[1:]])
+    result = ctypes.windll.shell32.ShellExecuteW(
+        None,
+        "runas",
+        sys.executable,
+        parameters,
+        str(script.parent),
+        1,
+    )
+    return 0 if result > 32 else 5
 
 
 def install_diagnostics() -> None:
@@ -63,6 +80,9 @@ def install_diagnostics() -> None:
 
 
 def main() -> int:
+    elevated_result = relaunch_as_administrator_if_needed()
+    if elevated_result is not None:
+        return elevated_result
     install_diagnostics()
     if sys.platform == "win32":
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PoggiTang.MyBot2")
@@ -86,6 +106,8 @@ def main() -> int:
         ),
     )
     window.show()
+    window.raise_()
+    window.activateWindow()
     result = app.exec()
     tray.dispose()
     return result

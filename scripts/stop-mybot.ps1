@@ -35,23 +35,34 @@ if (-not $process) {
     return
 }
 
+$name = [IO.Path]::GetFileNameWithoutExtension([string]$cimProcess.Name)
+$commandLine = [string]$cimProcess.CommandLine
+$embeddedPython = [IO.Path]::GetFullPath((Join-Path $resolvedRoot "runtime\python\python.exe"))
+$packagedExecutable = [IO.Path]::GetFullPath((Join-Path $resolvedRoot "MyBot2.exe"))
+$mainScript = [IO.Path]::GetFullPath((Join-Path $resolvedRoot "main.py"))
+$processPath = if ($cimProcess.ExecutablePath) {
+    [IO.Path]::GetFullPath([string]$cimProcess.ExecutablePath)
+} else {
+    ""
+}
+$pythonProcess = $name -in @("python", "pythonw")
+$embeddedProcess = $processPath.Equals($embeddedPython, [StringComparison]::OrdinalIgnoreCase)
+$sourceProcess = $pythonProcess -and (
+    $commandLine.IndexOf($mainScript, [StringComparison]::OrdinalIgnoreCase) -ge 0
+)
+$packagedProcess = $name.Equals("MyBot2", [StringComparison]::OrdinalIgnoreCase) -and (
+    $processPath.Equals($packagedExecutable, [StringComparison]::OrdinalIgnoreCase)
+)
+if (-not ($sourceProcess -or $embeddedProcess -or $packagedProcess)) {
+    return
+}
+
 if (-not $explicitTarget) {
-    $name = [IO.Path]::GetFileNameWithoutExtension([string]$cimProcess.Name)
-    $commandLine = [string]$cimProcess.CommandLine
-    $embeddedPython = [IO.Path]::GetFullPath((Join-Path $resolvedRoot "runtime\python\python.exe"))
-    $processPath = if ($cimProcess.ExecutablePath) {
-        [IO.Path]::GetFullPath([string]$cimProcess.ExecutablePath)
-    } else {
-        ""
-    }
     $lockItem = Get-Item -LiteralPath $LockPath -ErrorAction SilentlyContinue
     $lockMatchesStart = $lockItem -and (
         $lockItem.LastWriteTimeUtc -ge $process.StartTime.ToUniversalTime().AddSeconds(-5)
     )
-    $pythonProcess = $name -in @("python", "pythonw")
-    $myBotCommand = $commandLine -match '(?i)(^|[\\/"''\s])main\.py(["''\s]|$)'
-    $embeddedProcess = $processPath.Equals($embeddedPython, [StringComparison]::OrdinalIgnoreCase)
-    if (-not ($lockMatchesStart -and $pythonProcess -and ($myBotCommand -or $embeddedProcess))) {
+    if (-not $lockMatchesStart) {
         return
     }
 }

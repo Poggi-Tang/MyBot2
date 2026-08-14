@@ -9,14 +9,16 @@
   "primary": {
     "provider": "openai",
     "base_url": "https://api.openai.com",
-    "model": "gpt-5-mini",
-    "api_key": "replace-me"
+    "model": "gpt-5.6-sol",
+    "api_key": "replace-me",
+    "reasoning_effort": "high"
   },
   "backup": {
     "provider": "openai",
     "base_url": "https://api.openai.com",
-    "model": "gpt-5-mini",
-    "api_key": "replace-me"
+    "model": "gpt-5.6-sol",
+    "api_key": "replace-me",
+    "reasoning_effort": "high"
   },
   "image": {
     "provider": "openai",
@@ -63,7 +65,7 @@
     "api_base_url": "https://api.openai.com/v1",
     "model": "gpt-5.6-sol",
     "api_key": "",
-    "model_reasoning_effort": "low",
+    "model_reasoning_effort": "high",
     "timeout_seconds": 900,
     "yolo_mode": false
   }

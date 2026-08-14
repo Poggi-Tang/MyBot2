@@ -19,7 +19,7 @@ from .operation_log import operations
 MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024
 _SIZE_LINE = re.compile(r"^\s*[\d.]+\s*(?:B|KB|MB|GB|字节)\s*$", re.IGNORECASE)
 _IMAGE_EDIT_EXCLUSIONS = re.compile(
-    r"代码|脚本|程序|配置|数据库|仓库|项目|文档|表格|PDF|Word|Excel|PPT",
+    r"代码|脚本|程序|配置|数据库|仓库|项目|文档|表格|PDF|Word|Excel|PPT|朋友圈",
     re.IGNORECASE,
 )
 _IMAGE_EDIT_REFERENCE = re.compile(

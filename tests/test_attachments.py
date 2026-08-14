@@ -142,6 +142,9 @@ class AttachmentTests(unittest.TestCase):
     def test_code_edit_is_not_mistaken_for_image_edit(self):
         self.assertFalse(is_image_edit_request("把代码里的必胜客修改成肯德基"))
 
+    def test_moments_copywriting_is_not_mistaken_for_image_edit(self):
+        self.assertFalse(is_image_edit_request("把这张图片发朋友圈，编辑一个宣传文案"))
+
 
 if __name__ == "__main__":
     unittest.main()

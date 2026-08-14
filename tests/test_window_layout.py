@@ -1,6 +1,8 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from mybot_ui.app_v2 import DEFAULT_WINDOW_LAYOUT, normalize_window_layout
+from mybot_ui.app_v2 import DEFAULT_WINDOW_LAYOUT, MainWindow, normalize_window_layout
 
 
 class WindowLayoutTests(unittest.TestCase):
@@ -22,6 +24,14 @@ class WindowLayoutTests(unittest.TestCase):
         self.assertEqual(DEFAULT_WINDOW_LAYOUT["x"], layout["x"])
         self.assertEqual(1050, layout["width"])
         self.assertEqual(DEFAULT_WINDOW_LAYOUT["height"], layout["height"])
+
+    def test_initial_toolbar_stays_visible_until_wechat_has_been_foreground(self):
+        window = SimpleNamespace(_dock_visibility_armed=False)
+
+        with patch("mybot_ui.app_v2.find_wechat_window", return_value=None):
+            MainWindow._sync_docked_windows(window)
+
+        self.assertFalse(window._dock_visibility_armed)
 
 
 if __name__ == "__main__":

@@ -627,20 +627,7 @@ class MainWindow(QMainWindow):
         return page
 
     def _load_groups(self) -> None:
-        self.group_refresh_btn.setEnabled(False)
-
-        def apply_groups(groups: Any) -> None:
-            current = self._group_option()
-            names = [str(name).strip() for name in (groups or []) if str(name).strip()]
-            self.group_name.blockSignals(True)
-            self.group_name.clear()
-            self.group_name.addItems(names)
-            self.group_name.setEditText(current if current else (names[0] if names else ""))
-            self.group_name.blockSignals(False)
-            self.group_refresh_btn.setEnabled(True)
-            self.group_result.setText(f"已自动检索 {len(names)} 个群聊")
-
-        self._call("GetAllChatGroups", "", apply_groups)
+        self.group_result.setText("会话类型请在 MyBot 2.0 对话配置中通过 Python UIA 刷新")
 
     def _group_option(self) -> str:
         return self.group_name.currentText().strip()
@@ -772,8 +759,6 @@ class MainWindow(QMainWindow):
         system_row = QHBoxLayout()
         system_row.addWidget(button("自动通过好友申请", self._start_friend_listener))
         system_row.addWidget(button("监听群系统消息", self._start_group_listener))
-        system_row.addWidget(button("暂停监听", self._pause_monitor))
-        system_row.addWidget(button("恢复监听", self._resume_monitor))
         system_box.addLayout(system_row)
         layout.addWidget(system)
         events, events_box = card("实时事件")
@@ -784,9 +769,7 @@ class MainWindow(QMainWindow):
         return page
 
     def _start_monitor(self) -> None:
-        targets = [x.strip() for x in self.monitor_targets.text().split(",") if x.strip()]
-        options = {"nick_names": json.dumps(targets, ensure_ascii=False), "is_open_monitor": self.monitor_open.isChecked(), "options": json.dumps({"fetch_friend_info": False, "fetch_image": False, "fetch_voice_chat": False, "click_red_envelope": False, "is_risk_prevention": True})}
-        self._call("AddMessageListener", options, lambda _: self._append_event("消息监听已启动"))
+        self._append_event("消息监听由 MyBot 2.0 Python UIA 自动对话服务统一管理")
 
     def _start_friend_listener(self) -> None:
         options = {"passed_delete": True, "keyword": [], "suffix": "", "label": ""}
@@ -795,12 +778,6 @@ class MainWindow(QMainWindow):
     def _start_group_listener(self) -> None:
         targets = [x.strip() for x in self.monitor_targets.text().split(",") if x.strip()]
         self._call("AddGroupSystemMessageListener", json.dumps(targets, ensure_ascii=False), lambda _: self._append_event("群系统消息监听已启动"))
-
-    def _pause_monitor(self) -> None:
-        self._call("PauseMessageListener", "", lambda _: self._append_event("消息监听已暂停"))
-
-    def _resume_monitor(self) -> None:
-        self._call("ResumeMessageListener", "", lambda _: self._append_event("消息监听已恢复"))
 
     def _append_event(self, text: str) -> None:
         self.monitor_events.appendPlainText(text)

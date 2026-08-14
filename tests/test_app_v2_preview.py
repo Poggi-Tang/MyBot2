@@ -8,19 +8,92 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from mybot_ui.api import GatewayResult
 from mybot_ui.app_v2 import MainWindow
 from mybot_ui.attachments import ConversationAttachmentStore, IncomingAttachment
 from mybot_ui.auto_chat import ListenerMessageCursor, ReplyAction, ReplyKind
-from mybot_ui.chat_engine import ConversationMemory, IncomingMessage, ModelConfig
+from mybot_ui.chat_engine import ConversationMemory, IncomingMessage, ModelConfig, parse_listener_event
 from mybot_ui.codex_install import CodexRuntimeManager, CodexRuntimeStatus
 from mybot_ui.codex_runner import CodexResult, CodexRuntimeConfig
 from mybot_ui.security_policy import SecurityPolicy
 
 
 class AutoChatPreviewPollingTests(unittest.TestCase):
+    def test_preview_command_timeout_preserves_takeover_and_requests_reconnect(self):
+        recovered = []
+        fatal = []
+        window = SimpleNamespace(
+            auto_chat_running=True,
+            _preview_timeout_count=0,
+            _recover_preview_timeout=recovered.append,
+            _recover_stalled_server=fatal.append,
+        )
+
+        MainWindow._gateway_event(window, {
+            "type": "command_timeout",
+            "function": "GetVisibleConversations",
+            "data": "TimeoutError",
+        })
+
+        self.assertEqual(1, window._preview_timeout_count)
+        self.assertEqual(
+            ["GetVisibleConversations: TimeoutError"],
+            recovered,
+        )
+        self.assertEqual([], fatal)
+
+    def test_gateway_command_timeout_opens_uia_circuit(self):
+        recovered = []
+        window = SimpleNamespace(_recover_stalled_server=recovered.append)
+
+        MainWindow._gateway_event(window, {
+            "type": "command_timeout",
+            "function": "GetLatestOriginalImage",
+            "data": "TimeoutError",
+        })
+
+        self.assertEqual(
+            ["GetLatestOriginalImage: TimeoutError"],
+            recovered,
+        )
+
+    def test_preview_timeout_recovery_keeps_queue_and_switch(self):
+        calls = []
+        states = []
+        queue = deque(["queued-message"])
+        window = SimpleNamespace(
+            _server_auto_recovery_in_progress=False,
+            _resume_auto_chat_after_reconnect=False,
+            auto_chat_running=True,
+            _preview_timer=SimpleNamespace(stop=lambda: calls.append("timer_stopped")),
+            _preview_backoff_until=0.0,
+            _listener_targets={"芝士圆子"},
+            _auto_chat_queues={"芝士圆子": queue},
+            _auto_chat_active_tasks={"active-message"},
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
+            _set_auto_chat_ui_state=lambda *args: states.append(args),
+            _set_connection=lambda *args: calls.append(("connection", args)),
+            _append_chat=lambda *args: calls.append(("chat", args)),
+            gateway=SimpleNamespace(connected=False),
+            _connect=lambda **kwargs: calls.append(("connect", kwargs)),
+        )
+
+        with patch("mybot_ui.app_v2.time.monotonic", return_value=100.0), patch(
+            "mybot_ui.app_v2.operations.event"
+        ), patch("mybot_ui.app_v2.QTimer.singleShot") as scheduled:
+            MainWindow._recover_preview_timeout(window, "TimeoutError")
+
+        self.assertTrue(window.auto_chat_running)
+        self.assertTrue(window._resume_auto_chat_after_reconnect)
+        self.assertTrue(window._server_auto_recovery_in_progress)
+        self.assertEqual(["queued-message"], list(queue))
+        self.assertEqual({"active-message"}, window._auto_chat_active_tasks)
+        self.assertEqual(set(), window._listener_targets)
+        self.assertEqual(("recovering", 1), states[0])
+        self.assertEqual(1, scheduled.call_count)
+
     def test_late_preview_echo_is_processed_instead_of_logged_and_lost(self):
         accepted = []
         logs = []
@@ -228,6 +301,77 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
 
         self.assertEqual([], calls)
 
+    def test_preview_polling_pauses_while_original_image_is_being_fetched(self):
+        calls = []
+        window = SimpleNamespace(
+            auto_chat_running=True,
+            _preview_poll_pending=False,
+            _preview_backoff_until=0.0,
+            _original_image_fetch_count=0,
+            _preview_image_fetches={"contact"},
+            gateway=SimpleNamespace(
+                connected=True,
+                call=lambda *args: calls.append(args) or GatewayResult(True, []),
+            ),
+        )
+
+        MainWindow._poll_auto_chat_previews(window)
+
+        self.assertEqual([], calls)
+
+    def test_uia_timeout_opens_circuit_without_restarting_server(self):
+        calls = []
+        states = []
+        connections = []
+        messages = []
+        window = SimpleNamespace(
+            _uia_circuit_open=False,
+            _server_auto_recovery_in_progress=True,
+            _resume_auto_chat_after_reconnect=True,
+            _preview_timer=SimpleNamespace(stop=lambda: calls.append("timer_stopped")),
+            _preview_poll_pending=True,
+            _preview_backoff_until=0.0,
+            _preview_timeout_count=2,
+            _auto_chat_session=4,
+            auto_chat_running=True,
+            _listener_targets={"contact"},
+            _auto_chat_pending={"contact": 1},
+            _auto_chat_active_tasks={"task"},
+            _auto_chat_queues={"contact": deque(["message"])},
+            _auto_task_enqueued_at={"task": 1.0},
+            _auto_task_started_at={"task": 2.0},
+            _group_metadata_waiting={"contact"},
+            task_status_pool=None,
+            _auto_reply_spans={},
+            gateway=SimpleNamespace(
+                connected=True,
+                disconnect=lambda: calls.append("disconnected") or object(),
+            ),
+            _set_auto_chat_ui_state=lambda *args, **kwargs: states.append((args, kwargs)),
+            _set_connection=lambda *args: connections.append(args),
+            _append_chat=lambda *args: messages.append(args),
+            _run_future=lambda future, callback: callback(future),
+            _restart_server=lambda: calls.append("server_restarted"),
+        )
+
+        with patch("mybot_ui.app_v2.operations.event"):
+            MainWindow._recover_stalled_server(window, "TimeoutError")
+
+        self.assertTrue(window._uia_circuit_open)
+        self.assertFalse(window.auto_chat_running)
+        self.assertFalse(window.gateway.connected)
+        self.assertEqual(5, window._auto_chat_session)
+        self.assertEqual(set(), window._listener_targets)
+        self.assertEqual({}, window._auto_chat_pending)
+        self.assertEqual(set(), window._auto_chat_active_tasks)
+        self.assertEqual({}, window._auto_chat_queues)
+        self.assertIn("timer_stopped", calls)
+        self.assertIn("disconnected", calls)
+        self.assertNotIn("server_restarted", calls)
+        self.assertEqual("error", states[0][0][0])
+        self.assertTrue(connections)
+        self.assertTrue(messages)
+
     def test_recovery_keeps_queued_message_out_of_gateway_until_reconnected(self):
         incoming = IncomingMessage("芝士圆子", "对方", "排队消息", "2026-08-12T14:09:00")
         queue = deque([incoming])
@@ -241,6 +385,47 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
         MainWindow._process_next_auto_message(window, "芝士圆子")
 
         self.assertEqual([incoming], list(queue))
+
+    def test_conversation_scan_keeps_queued_message_out_of_gateway(self):
+        incoming = IncomingMessage("芝士圆子", "对方", "排队消息", "2026-08-13T19:00:00")
+        queue = deque([incoming])
+        window = SimpleNamespace(
+            _auto_chat_queues={"芝士圆子": queue},
+            auto_chat_running=True,
+            _conversation_scan_in_progress=True,
+            _server_auto_recovery_in_progress=False,
+            gateway=SimpleNamespace(connected=True),
+        )
+
+        MainWindow._process_next_auto_message(window, "芝士圆子")
+
+        self.assertEqual([incoming], list(queue))
+
+    def test_automatic_send_waits_for_conversation_scan(self):
+        calls = []
+        incoming = SimpleNamespace(chat_title="芝士圆子")
+        window = SimpleNamespace(
+            _auto_chat_session=7,
+            auto_chat_running=True,
+            _conversation_scan_in_progress=True,
+            _server_auto_recovery_in_progress=False,
+            gateway=SimpleNamespace(connected=True),
+            account="圆子",
+            _run_future=lambda value, callback: callback(value),
+        )
+
+        with patch("mybot_ui.app_v2.QTimer.singleShot") as scheduled:
+            MainWindow._run_auto_gateway_send(
+                window,
+                incoming,
+                7,
+                "SendMessage",
+                {"who": "芝士圆子", "message": "测试"},
+                calls.append,
+            )
+
+        self.assertEqual([], calls)
+        self.assertEqual(1, scheduled.call_count)
 
     def test_automatic_send_waits_for_gateway_reconnect(self):
         calls = []
@@ -474,9 +659,15 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             _set_auto_chat_ui_state=lambda state, count=0: states.append((state, count)),
             _set_connection=lambda *_args: None,
             _restart_server_worker=lambda *_args: GatewayResult(True, {"pid": 1}),
+            backend=SimpleNamespace(
+                server=SimpleNamespace(
+                    restart=lambda *_args: GatewayResult(True, {"pid": 1})
+                )
+            ),
             model_executor=SimpleNamespace(submit=lambda *_args: "restart-future"),
             uri_input=SimpleNamespace(text=lambda: "ws://127.0.0.1:5177/ws"),
             _run_future=lambda *_args: None,
+            wechat_messages=SimpleNamespace(pause=lambda: GatewayResult(True, True)),
         )
 
         with patch("mybot_ui.app_v2.Path.is_file", return_value=True):
@@ -591,6 +782,56 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             MainWindow._poll_auto_chat_previews(window)
 
         self.assertEqual([("芝士圆子", "18:27", "[图片]|18:27")], fetched)
+
+    def test_outgoing_image_preview_is_suppressed_before_original_fetch(self):
+        fetched = []
+        cursor = ListenerMessageCursor()
+        cursor.record_outgoing_media("芝士圆子", "[图片]")
+        result = GatewayResult(True, [{
+            "conversation_title": "芝士圆子",
+            "conversation_content": "[图片]",
+            "time": "18:27",
+        }])
+        window = SimpleNamespace(
+            auto_chat_running=True,
+            _preview_poll_pending=False,
+            gateway=SimpleNamespace(connected=True, call=lambda *_args: result),
+            account="圆子",
+            _preview_snapshots={"芝士圆子": "旧消息|18:26"},
+            _preview_image_retries={},
+            _preview_image_completed={},
+            _latest_incoming_media={},
+            _auto_chat_sent_contents={},
+            _preview_suppressed_until={},
+            _auto_chat_groups=set(),
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
+            _message_cursor=cursor,
+            _append_chat=lambda *_args: None,
+            _fetch_preview_image=lambda *args: fetched.append(args),
+            _accept_auto_message=lambda _incoming: None,
+            _run_future=lambda value, callback: callback(value),
+        )
+
+        with patch("mybot_ui.app_v2.operations.event"):
+            MainWindow._poll_auto_chat_previews(window)
+
+        self.assertEqual([], fetched)
+        self.assertEqual("[图片]|18:27", window._preview_image_completed["芝士圆子"])
+
+    def test_image_preview_retry_stops_after_three_attempts(self):
+        window = SimpleNamespace(
+            _preview_image_retries={"芝士圆子": ("[图片]|18:27", 2, 99.0)},
+            _preview_image_completed={},
+        )
+
+        with patch("mybot_ui.app_v2.operations.event") as event:
+            MainWindow._schedule_preview_image_retry(
+                window, "芝士圆子", "[图片]|18:27", "无法复制原图"
+            )
+
+        self.assertNotIn("芝士圆子", window._preview_image_retries)
+        self.assertEqual("[图片]|18:27", window._preview_image_completed["芝士圆子"])
+        self.assertEqual("preview_image_retry_abandoned", event.call_args.args[1])
 
     def test_real_image_is_not_dropped_by_an_older_outgoing_image_marker(self):
         accepted = []
@@ -730,7 +971,7 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             self.assertEqual(1, len(resolved))
             self.assertEqual("123", Path(resolved[0].path).read_text(encoding="utf-8"))
 
-    def test_reconnect_resumes_without_invalidating_active_tasks(self):
+    def test_normal_reconnect_does_not_resume_previous_takeover(self):
         starts = []
         window = SimpleNamespace(
             _connect_in_progress=True,
@@ -747,18 +988,57 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             ),
             account="",
             auto_chat_running=True,
+            _resume_auto_chat_after_reconnect=False,
+            _server_auto_recovery_in_progress=False,
             _listener_targets={"芝士圆子"},
             _set_connection=lambda *_args: None,
             _append_chat=lambda *_args: None,
             _refresh_auto_chat_targets=lambda: None,
             _start_auto_chat=lambda **kwargs: starts.append(kwargs),
             _run_future=lambda value, callback: callback(value),
+            wechat_messages=SimpleNamespace(pause=lambda: GatewayResult(True, True)),
         )
 
         MainWindow._connection_result(window, GatewayResult(True, ["圆子"]))
 
         self.assertTrue(window.auto_chat_running)
-        self.assertEqual([{"preserve_session": True}], starts)
+        self.assertEqual([], starts)
+
+    def test_preview_reconnect_defers_preserved_takeover_until_scan_completes(self):
+        starts = []
+        window = SimpleNamespace(
+            _connect_in_progress=True,
+            connect_button=SimpleNamespace(setEnabled=lambda _value: None),
+            account_combo=SimpleNamespace(
+                blockSignals=lambda _value: None,
+                clear=lambda: None,
+                addItems=lambda _items: None,
+            ),
+            gateway=SimpleNamespace(
+                clients=["圆子"],
+                uri="ws://127.0.0.1:5177/ws",
+                call=lambda *_args: GatewayResult(True, True),
+            ),
+            account="",
+            auto_chat_running=True,
+            _resume_auto_chat_after_reconnect=True,
+            _server_auto_recovery_in_progress=True,
+            _preview_timeout_count=1,
+            _listener_targets=set(),
+            _set_connection=lambda *_args: None,
+            _append_chat=lambda *_args: None,
+            _refresh_auto_chat_targets=lambda: None,
+            _start_auto_chat=lambda **kwargs: starts.append(kwargs),
+            _run_future=lambda value, callback: callback(value),
+            wechat_messages=SimpleNamespace(pause=lambda: GatewayResult(True, True)),
+        )
+
+        MainWindow._connection_result(window, GatewayResult(True, ["圆子"]))
+
+        self.assertEqual([], starts)
+        self.assertFalse(window._resume_auto_chat_after_reconnect)
+        self.assertTrue(window._resume_auto_chat_after_conversation_scan)
+        self.assertFalse(window._group_metadata_ready)
 
     def test_stop_is_immediate_even_when_server_pause_fails_later(self):
         callbacks = []
@@ -787,6 +1067,9 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
                 ),
             ),
             _run_future=lambda _future, callback: callbacks.append(callback),
+            wechat_messages=SimpleNamespace(
+                pause=lambda: GatewayResult(False, error="TimeoutError")
+            ),
         )
 
         with patch("mybot_ui.app_v2.operations.start", return_value="stop-span"), patch(
@@ -803,8 +1086,6 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             self.assertEqual({}, window._auto_chat_queues)
             self.assertEqual({}, window._auto_reply_spans)
             self.assertEqual(["stopped"], states)
-
-            callbacks[0](GatewayResult(False, error="TimeoutError"))
 
             self.assertFalse(window.auto_chat_running)
             self.assertEqual(["stopped"], states)
@@ -837,6 +1118,12 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             _preview_suppressed_until={},
             _message_cursor=ListenerMessageCursor(),
             _preview_timer=timer,
+            gateway_events=SimpleNamespace(
+                received=SimpleNamespace(emit=lambda *_args: None)
+            ),
+            wechat_messages=SimpleNamespace(
+                start=lambda *_args: GatewayResult(True, True)
+            ),
         )
 
         with patch("mybot_ui.app_v2.operations.start", return_value="span"), patch(
@@ -872,6 +1159,12 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             _preview_suppressed_until=suppressed_until,
             _message_cursor=cursor,
             _preview_timer=SimpleNamespace(start=lambda: None),
+            gateway_events=SimpleNamespace(
+                received=SimpleNamespace(emit=lambda *_args: None)
+            ),
+            wechat_messages=SimpleNamespace(
+                start=lambda *_args: GatewayResult(True, True)
+            ),
         )
 
         with patch("mybot_ui.app_v2.operations.start", return_value="span"), patch(
@@ -915,6 +1208,12 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
             _preview_suppressed_until={},
             _message_cursor=ListenerMessageCursor(),
             _preview_timer=SimpleNamespace(start=lambda: None),
+            gateway_events=SimpleNamespace(
+                received=SimpleNamespace(emit=lambda *_args: None)
+            ),
+            wechat_messages=SimpleNamespace(
+                start=lambda *_args: GatewayResult(True, True)
+            ),
         )
 
         with patch("mybot_ui.app_v2.operations.start", return_value="span"), patch(
@@ -922,7 +1221,12 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
         ), patch("mybot_ui.app_v2.operations.event"):
             MainWindow._start_auto_chat(window)
 
-        self.assertEqual([("GetVisibleConversations", {"timeout_seconds": 20})], calls)
+        self.assertEqual(
+            [
+                ("GetVisibleConversations", {"timeout_seconds": 20}),
+            ],
+            calls,
+        )
         self.assertEqual({"芝士圆子": "启动前的消息|13:35"}, window._preview_snapshots)
         self.assertTrue(window.auto_chat_running)
 
@@ -1082,6 +1386,72 @@ class AutoChatPreviewPollingTests(unittest.TestCase):
 
 
 class AutoChatStartupTests(unittest.TestCase):
+    def test_simulated_listener_scenarios_use_real_listener_shape(self):
+        payload = MainWindow._simulated_listener_payload(
+            "group_reference",
+            target="测试群",
+            content="继续说",
+            file_path="",
+            ai_name="圆子",
+            is_group=True,
+        )
+
+        self.assertEqual("群聊", payload["chat_type"])
+        parsed = parse_listener_event(payload, now=datetime.now())
+        self.assertEqual(1, len(parsed))
+        self.assertTrue(parsed[0].is_reference)
+        self.assertEqual("圆子", parsed[0].referenced_who)
+
+    def test_simulated_rapid_burst_preserves_all_messages(self):
+        payload = MainWindow._simulated_listener_payload(
+            "rapid_burst",
+            target="芝士圆子",
+            content="连续测试",
+            file_path="",
+            ai_name="圆子",
+            is_group=False,
+        )
+
+        parsed = parse_listener_event(payload, now=datetime.now())
+        self.assertEqual(3, len(parsed))
+        self.assertEqual(
+            ["连续测试（1/3）", "连续测试（2/3）", "连续测试（3/3）"],
+            [item.content for item in parsed],
+        )
+
+    def test_group_member_queries_require_non_empty_results(self):
+        self.assertFalse(MainWindow._tool_succeeded(
+            "GetChatGroupMemberList", GatewayResult(True, []),
+        ))
+        self.assertFalse(MainWindow._tool_succeeded(
+            "GetGroupOwner", GatewayResult(True, ""),
+        ))
+        self.assertTrue(MainWindow._tool_succeeded(
+            "GetChatGroupMemberList", GatewayResult(True, ["member"]),
+        ))
+        self.assertTrue(MainWindow._tool_succeeded(
+            "IsOwnerChatGroup", GatewayResult(True, False),
+        ))
+
+    def test_failed_moments_open_skips_publish_and_delete_but_keeps_close(self):
+        progress = SimpleNamespace(maximum=None, setMaximum=lambda value: setattr(progress, "maximum", value))
+        window = SimpleNamespace(
+            _test_queue=[
+                ("AddMoments", {}),
+                ("RemoveMoments", {}),
+                ("CloseMoments", {}),
+            ],
+            _test_total=3,
+            _test_index=0,
+            test_progress=progress,
+        )
+
+        MainWindow._skip_pending_tests(window, {"AddMoments", "RemoveMoments"})
+
+        self.assertEqual([("CloseMoments", {})], window._test_queue)
+        self.assertEqual(1, window._test_total)
+        self.assertEqual(1, progress.maximum)
+
     def test_split_target_lists_merge_group_and_private_selections(self):
         def fake_list(*items):
             values = [
@@ -1109,36 +1479,82 @@ class AutoChatStartupTests(unittest.TestCase):
             MainWindow._selected_auto_chat_targets(window),
         )
 
-    def test_cached_group_metadata_avoids_startup_type_rescan(self):
-        response = GatewayResult(True, ["测试群", "芝士圆子"])
-        calls = []
+    def test_python_uia_scan_populates_group_and_private_targets(self):
+        from mybot_ui.conversation_scanner import ConversationScan, ConversationScanResult
+
+        result = ConversationScanResult(True, ConversationScan(
+            ("测试群", "芝士圆子"),
+            ("测试群",),
+            ("芝士圆子",),
+            12.5,
+        ))
+        submitted = []
+        persisted = []
         window = SimpleNamespace(
-            gateway=SimpleNamespace(
-                connected=True,
-                call=lambda account, function, options: (
-                    calls.append((account, function, options)) or response
-                ),
-            ),
-            account="圆子",
+            gateway=SimpleNamespace(connected=True),
+            _conversation_scan_in_progress=False,
             _selected_auto_chat_targets=lambda: {"芝士圆子"},
-            _auto_selection_restored=True,
-            _consume_auto_start_targets=lambda _available: set(),
             _auto_chat_targets_loaded=False,
             _append_chat=lambda *_args: None,
             _refresh_attachment_list=lambda: None,
-            _group_metadata_ready=True,
+            _group_metadata_ready=False,
             _group_metadata_refresh_pending=False,
+            _group_metadata_retry_count=2,
+            _group_metadata_waiting=deque(),
+            _persist_group_metadata_cache=persisted.append,
             auto_chat_running=False,
-            _refresh_group_metadata=lambda: self.fail("cached metadata must avoid a startup scan"),
+            conversation_scanner=SimpleNamespace(try_scan=lambda: result),
+            conversation_scan_executor=SimpleNamespace(
+                submit=lambda function: submitted.append(function) or function()
+            ),
             _run_future=lambda value, callback: callback(value),
         )
 
         with patch.object(MainWindow, "_populate_auto_chat_targets") as populate:
             MainWindow._refresh_auto_chat_targets(window)
 
-        self.assertEqual([("圆子", "GetAllConversations", "")], calls)
         populate.assert_called_once_with(window, ["测试群", "芝士圆子"], {"芝士圆子"})
+        self.assertEqual({"测试群"}, window._auto_chat_groups)
+        self.assertEqual([["测试群"]], persisted)
+        self.assertTrue(window._group_metadata_ready)
+        self.assertTrue(window._initial_conversation_scan_complete)
         self.assertFalse(window._group_metadata_refresh_pending)
+
+    def test_successful_startup_scan_releases_deferred_auto_chat(self):
+        from mybot_ui.conversation_scanner import ConversationScan, ConversationScanResult
+
+        starts = []
+        result = ConversationScanResult(True, ConversationScan(
+            ("芝士圆子",), (), ("芝士圆子",), 6.5,
+        ))
+        window = SimpleNamespace(
+            gateway=SimpleNamespace(connected=True),
+            _conversation_scan_in_progress=False,
+            _initial_conversation_scan_complete=False,
+            _resume_auto_chat_after_conversation_scan=True,
+            _selected_auto_chat_targets=lambda: {"芝士圆子"},
+            _auto_chat_targets_loaded=False,
+            _append_chat=lambda *_args: None,
+            _refresh_attachment_list=lambda: None,
+            _group_metadata_ready=False,
+            _group_metadata_refresh_pending=False,
+            _group_metadata_retry_count=0,
+            _group_metadata_retry_scheduled=False,
+            _group_metadata_waiting=deque(),
+            _persist_group_metadata_cache=lambda _groups: None,
+            auto_chat_running=False,
+            conversation_scanner=SimpleNamespace(try_scan=lambda: result),
+            conversation_scan_executor=SimpleNamespace(submit=lambda function: function()),
+            _run_future=lambda value, callback: callback(value),
+            _start_auto_chat=lambda **kwargs: starts.append(kwargs),
+        )
+
+        with patch.object(MainWindow, "_populate_auto_chat_targets"):
+            MainWindow._refresh_auto_chat_targets(window)
+
+        self.assertTrue(window._initial_conversation_scan_complete)
+        self.assertFalse(window._resume_auto_chat_after_conversation_scan)
+        self.assertEqual([{"preserve_session": True}], starts)
 
     def test_running_target_change_schedules_listener_sync(self):
         calls = []
@@ -1170,15 +1586,16 @@ class AutoChatStartupTests(unittest.TestCase):
             ),
             _set_auto_chat_ui_state=lambda state, count: states.append((state, count)),
             _append_chat=lambda *_args: None,
+            wechat_messages=SimpleNamespace(
+                update_targets=lambda targets: calls.append(tuple(sorted(targets)))
+                or GatewayResult(True, True)
+            ),
         )
 
         with patch("mybot_ui.app_v2.operations.event") as event:
             MainWindow._sync_auto_chat_listener_targets(window)
 
-        self.assertEqual(
-            [("RemoveListeningFriend", "旧会话"), ("AddListeningFriend", "新会话")],
-            calls,
-        )
+        self.assertEqual([("新会话",)], calls)
         self.assertEqual({"新会话"}, window._listener_targets)
         self.assertEqual([("running", 1)], states)
         self.assertTrue(any(
@@ -1186,31 +1603,98 @@ class AutoChatStartupTests(unittest.TestCase):
             for call in event.call_args_list
         ))
 
-    def test_group_metadata_refresh_uses_one_request_for_rules_and_test_target(self):
+    def test_running_python_uia_scan_pauses_and_restores_listener(self):
+        from mybot_ui.conversation_scanner import ConversationScan, ConversationScanResult
+
         calls = []
-        applied = []
-        response = GatewayResult(True, ["测试群", "AI 群"])
+        result = ConversationScanResult(True, ConversationScan(
+            ("测试群",), ("测试群",), (), 8.0,
+        ))
         window = SimpleNamespace(
             gateway=SimpleNamespace(
                 connected=True,
                 call=lambda account, function, options: (
-                    calls.append((account, function, options)) or response
+                    calls.append(function) or GatewayResult(True, True)
                 ),
             ),
             account="圆子",
-            _group_metadata_refresh_in_progress=False,
-            _group_metadata_refresh_pending=True,
+            _conversation_scan_in_progress=False,
+            _selected_auto_chat_targets=lambda: {"测试群"},
+            auto_chat_running=True,
+            _preview_timer=SimpleNamespace(
+                stop=lambda: calls.append("timer-stop"),
+                start=lambda: calls.append("timer-start"),
+            ),
+            _set_auto_chat_ui_state=lambda state, _count: calls.append(state),
+            _append_chat=lambda *_args: None,
+            _refresh_attachment_list=lambda: None,
+            _group_metadata_waiting=deque(),
+            _persist_group_metadata_cache=lambda _groups: None,
+            conversation_scanner=SimpleNamespace(try_scan=lambda: result),
+            conversation_scan_executor=SimpleNamespace(submit=lambda function: function()),
             _run_future=lambda value, callback: callback(value),
-            _apply_group_metadata=lambda values: applied.extend(values),
+            wechat_messages=SimpleNamespace(
+                pause=lambda: calls.append("python-pause") or GatewayResult(True, True),
+                resume=lambda: calls.append("python-resume") or GatewayResult(True, True),
+            ),
         )
 
-        MainWindow._refresh_group_metadata(window)
+        with patch.object(MainWindow, "_populate_auto_chat_targets"):
+            MainWindow._refresh_auto_chat_targets(window)
 
-        self.assertEqual([("圆子", "GetAllChatGroups", "")], calls)
-        self.assertEqual(["测试群", "AI 群"], applied)
-        self.assertFalse(window._group_metadata_refresh_in_progress)
+        self.assertEqual(
+            ["timer-stop", "recovering", "python-pause", "python-resume", "running"],
+            calls,
+        )
 
-    def test_configured_contact_is_consumed_once_when_available(self):
+    def test_failed_python_uia_scan_keeps_existing_group_metadata(self):
+        from mybot_ui.conversation_scanner import ConversationScanResult
+
+        messages = []
+        retries = []
+        window = SimpleNamespace(
+            gateway=SimpleNamespace(connected=True),
+            _conversation_scan_in_progress=False,
+            _initial_conversation_scan_complete=False,
+            _group_metadata_ready=True,
+            _selected_auto_chat_targets=lambda: set(),
+            auto_chat_running=False,
+            _auto_chat_groups={"缓存群"},
+            _append_chat=lambda role, text: messages.append((role, text)),
+            _schedule_group_metadata_retry=lambda: retries.append(True),
+            conversation_scanner=SimpleNamespace(
+                try_scan=lambda: ConversationScanResult(False, error="未找到会话列表")
+            ),
+            conversation_scan_executor=SimpleNamespace(submit=lambda function: function()),
+            _run_future=lambda value, callback: callback(value),
+        )
+
+        MainWindow._refresh_auto_chat_targets(window)
+
+        self.assertEqual({"缓存群"}, window._auto_chat_groups)
+        self.assertFalse(window._group_metadata_ready)
+        self.assertEqual([True], retries)
+        self.assertIn("未找到会话列表", messages[-1][1])
+
+    def test_startup_scan_keeps_retrying_without_trusting_cache(self):
+        window = SimpleNamespace(
+            _group_metadata_retry_count=3,
+            _group_metadata_retry_scheduled=False,
+            _initial_conversation_scan_complete=False,
+            _group_metadata_ready=True,
+            _auto_chat_groups={"缓存群"},
+        )
+
+        with patch("mybot_ui.app_v2.QTimer.singleShot") as scheduled, patch(
+            "mybot_ui.app_v2.operations.event"
+        ):
+            MainWindow._schedule_group_metadata_retry(window)
+
+        self.assertFalse(window._group_metadata_ready)
+        self.assertTrue(window._group_metadata_retry_scheduled)
+        self.assertEqual(15000, scheduled.call_args.args[0])
+
+    def test_legacy_configured_contact_is_not_restored(self):
         window = SimpleNamespace(
             settings={"chat": {
                 "auto_start_enabled": True,
@@ -1222,7 +1706,7 @@ class AutoChatStartupTests(unittest.TestCase):
         selected = MainWindow._consume_auto_start_targets(window, {"芝士圆子", "其他会话"})
         repeated = MainWindow._consume_auto_start_targets(window, {"芝士圆子"})
 
-        self.assertEqual({"芝士圆子"}, selected)
+        self.assertEqual(set(), selected)
         self.assertEqual(set(), repeated)
 
     def test_missing_or_disabled_contact_does_not_start(self):
@@ -1238,17 +1722,17 @@ class AutoChatStartupTests(unittest.TestCase):
         self.assertEqual(set(), MainWindow._consume_auto_start_targets(missing, {"其他会话"}))
         self.assertEqual(set(), MainWindow._consume_auto_start_targets(disabled, {"芝士圆子"}))
 
-    def test_disabled_auto_start_still_restores_last_selection(self):
+    def test_legacy_saved_selection_is_not_restored(self):
         window = SimpleNamespace(
             settings={"chat": {"auto_start_enabled": False, "auto_start_targets": ["芝士圆子"]}},
         )
 
         self.assertEqual(
-            {"芝士圆子"},
+            set(),
             MainWindow._configured_auto_chat_targets(window, {"芝士圆子", "其他会话"}),
         )
 
-    def test_last_selection_is_written_without_losing_other_chat_settings(self):
+    def test_legacy_auto_start_settings_are_removed_without_losing_other_chat_settings(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.json"
             config_path.write_text(
@@ -1265,10 +1749,11 @@ class AutoChatStartupTests(unittest.TestCase):
             MainWindow._persist_auto_chat_selection(window)
 
             saved = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(["测试群", "芝士圆子"], saved["chat"]["auto_start_targets"])
+            self.assertNotIn("auto_start_enabled", saved["chat"])
+            self.assertNotIn("auto_start_targets", saved["chat"])
             self.assertEqual(2, saved["chat"]["cooldown_seconds"])
 
-    def test_unloaded_target_list_does_not_erase_saved_selection(self):
+    def test_unloaded_target_list_still_removes_legacy_auto_start_settings(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.json"
             config_path.write_text(
@@ -1285,7 +1770,7 @@ class AutoChatStartupTests(unittest.TestCase):
             MainWindow._persist_auto_chat_selection(window)
 
             saved = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(["芝士圆子"], saved["chat"]["auto_start_targets"])
+            self.assertNotIn("auto_start_targets", saved["chat"])
 
 
 class SecurityManagementTests(unittest.TestCase):
@@ -1366,8 +1851,9 @@ class SecurityManagementTests(unittest.TestCase):
             )
             window = SimpleNamespace(
                 _codex_runtime_config=lambda: runtime,
-                ability_store=object(),
-                codex_thread_store=object(),
+                codex_runtime_manager=SimpleNamespace(
+                    runner=lambda config: SimpleNamespace(config=config)
+                ),
             )
 
             admin_runner = MainWindow._codex_runner(window, privileged=True)
@@ -2039,6 +2525,89 @@ class AutoChatModelRoutingTests(unittest.TestCase):
             [(incoming, 3, "这件事我想认真说给你听", "这件事我想认真说给你听")],
             sent,
         )
+
+    def test_sdk_tool_cannot_bypass_a_dedicated_transport_type(self):
+        replies = []
+        calls = []
+        incoming = SimpleNamespace(chat_title="芝士圆子", who="对方")
+        window = SimpleNamespace(
+            _send_auto_text_segments=lambda message, session, segments, full_reply: replies.append(
+                (segments, full_reply)
+            ),
+            _run_auto_gateway_send=lambda *_args: calls.append(_args),
+        )
+
+        MainWindow._run_auto_sdk_tool(
+            window,
+            incoming,
+            3,
+            ReplyAction(
+                ReplyKind.SDK_TOOL,
+                function="SendMessage",
+                arguments={"who": "芝士圆子", "message": "绕过类型"},
+            ),
+        )
+
+        self.assertEqual([], calls)
+        self.assertIn("text 类型", replies[0][1])
+
+    def test_typed_file_only_sends_registered_file_from_current_conversation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = root / "current.txt"
+            other = root / "other.txt"
+            current.write_text("current", encoding="utf-8")
+            other.write_text("other", encoding="utf-8")
+            incoming = SimpleNamespace(chat_title="芝士圆子", who="对方")
+            sent = []
+            replies = []
+            finished = []
+            store = SimpleNamespace(
+                all=lambda conversation: (
+                    (IncomingAttachment(current.name, str(current), "file"),)
+                    if conversation == "芝士圆子"
+                    else (IncomingAttachment(other.name, str(other), "file"),)
+                )
+            )
+            window = SimpleNamespace(
+                attachment_store=store,
+                security_policy=None,
+                _auto_chat_groups=set(),
+                _auto_chat_session=3,
+                auto_chat_running=True,
+                _message_cursor=ListenerMessageCursor(),
+                _suppress_outgoing_media_preview=lambda *_args: None,
+                _send_auto_text_segments=lambda message, session, segments, full_reply: replies.append(
+                    full_reply
+                ),
+                _finish_auto_message=lambda *args, **kwargs: finished.append((args, kwargs)),
+                _run_auto_gateway_send=lambda message, session, function, options, callback: (
+                    sent.append((function, options)) or callback(GatewayResult(True, True))
+                ),
+            )
+
+            def gateway_send(_window, _incoming, _session, function, options, callback):
+                sent.append((function, options))
+                callback(GatewayResult(True, True))
+
+            with patch.object(MainWindow, "_record_daily_workspace"), patch.object(
+                MainWindow, "_run_auto_gateway_send", gateway_send
+            ):
+                MainWindow._send_auto_known_file(window, incoming, 3, current.name)
+                MainWindow._send_auto_known_file(window, incoming, 3, other.name)
+                MainWindow._send_auto_known_file(window, incoming, 3, str(current))
+
+            self.assertEqual(1, len(sent))
+            self.assertEqual("SendFile", sent[0][0])
+            self.assertIn(current.name, sent[0][1]["files"])
+            self.assertEqual(
+                [
+                    "当前会话里没有找到这个已接收的文件",
+                    "文件类型只接受当前会话附件的文件名，不能使用路径",
+                ],
+                replies,
+            )
+            self.assertEqual("file", finished[0][1]["result"]["reply_kind"])
 
 
 if __name__ == "__main__":

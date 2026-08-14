@@ -52,6 +52,11 @@ namespace WeChatAuto.Components
 
         public StickerCatalogStore()
         {
+            Reload();
+        }
+
+        public void Reload()
+        {
             try
             {
                 if (File.Exists(_path))
@@ -153,7 +158,8 @@ namespace WeChatAuto.Components
         public static AutomationElement[] FindSemanticCells(AutomationElement root)
         {
             var blockedNames = new HashSet<string>(new[] {
-                "搜索表情", "默认表情", "自定义表情", "发送表情(Alt+E)"
+                "搜索表情", "默认表情", "自定义表情", "发送表情(Alt+E)",
+                "最近使用", "所有表情"
             }, StringComparer.Ordinal);
             var candidates = root.FindAllDescendants(cf => cf.ByControlType(ControlType.Text))
                 .Where(x => !x.IsOffscreen && !string.IsNullOrWhiteSpace(x.Name))
@@ -226,6 +232,8 @@ namespace WeChatAuto.Components
 
         public StickerCatalogItem Resolve(string category, string nameOrHash)
         {
+            if (Items.Count == 0)
+                Reload();
             var value = nameOrHash.Trim();
             return Items.FirstOrDefault(x =>
                 x.Category.Equals(category.Trim(), StringComparison.Ordinal)

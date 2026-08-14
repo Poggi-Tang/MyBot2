@@ -17,6 +17,7 @@ from mybot_ui.auto_chat import (
     select_sticker_item,
     sticker_item_send_value,
 )
+from mybot_ui.catalog import TOOLS
 
 
 class ListenerMessageCursorTests(unittest.TestCase):
@@ -26,6 +27,12 @@ class ListenerMessageCursorTests(unittest.TestCase):
             self.assertTrue(cursor.accept_incoming("会话", "same"))
             self.assertFalse(cursor.accept_incoming("会话", "same"))
             self.assertTrue(cursor.accept_incoming("会话", "same"))
+
+    def test_every_sdk_function_has_a_supported_action_type(self):
+        supported = {kind.value for kind in ReplyKind}
+        self.assertTrue(TOOLS)
+        for spec in TOOLS:
+            self.assertIn(spec.action_type, supported, spec.function)
 
     def test_listener_and_preview_identity_share_message_minute(self):
         listener = type("Message", (), {
@@ -154,6 +161,20 @@ class ReplyPlanningTests(unittest.TestCase):
 
     def test_image_discussion_is_not_mistaken_for_generation(self):
         self.assertEqual(ReplyKind.TEXT, requested_action("你能看懂这张图片吗").kind)
+
+    def test_non_visual_creation_is_not_mistaken_for_image_generation(self):
+        for text in (
+            "做一首诗，关于上海8月份气候的",
+            "帮我制作一份工作计划",
+            "生成一段产品文案",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(ReplyKind.TEXT, requested_action(text).kind)
+
+        self.assertEqual(
+            ReplyKind.IMAGE,
+            requested_action("帮我制作一张上海夏天的海报").kind,
+        )
 
     def test_voice_and_sticker_requests_are_selected(self):
         self.assertEqual(ReplyKind.VOICE, requested_action("用语音回复我").kind)
@@ -323,6 +344,47 @@ class ReplyPlanningTests(unittest.TestCase):
         self.assertEqual("窗边晒太阳的猫", image_action.argument)
         self.assertEqual("", image_text)
 
+    def test_explicit_reference_and_tap_requests_have_types(self):
+        self.assertEqual(
+            ReplyKind.REFERENCE,
+            requested_action("引用我这条消息回复我").kind,
+        )
+        self.assertEqual(ReplyKind.TAP, requested_action("拍一拍我").kind)
+
+    def test_structured_action_supports_every_typed_capability(self):
+        for kind in (
+            ReplyKind.TEXT,
+            ReplyKind.REFERENCE,
+            ReplyKind.IMAGE,
+            ReplyKind.IMAGE_EDIT,
+            ReplyKind.VOICE,
+            ReplyKind.EMOJI,
+            ReplyKind.STICKER,
+            ReplyKind.FILE,
+            ReplyKind.TAP,
+            ReplyKind.SDK_TOOL,
+            ReplyKind.MCP_TOOL,
+            ReplyKind.SKILL_TASK,
+            ReplyKind.CLI_TASK,
+        ):
+            payload = (
+                '<MYBOT_ACTION>{"type":"' + kind.value + '",'
+                '"content":"完成","argument":"参数","function":"GetTitle",'
+                '"arguments":{"who":"芝士圆子"}}</MYBOT_ACTION>'
+            )
+            action, content = model_reply_action(payload)
+            self.assertEqual(kind, action.kind)
+            self.assertEqual("完成", content)
+            self.assertEqual("参数", action.argument)
+            self.assertEqual("GetTitle", action.function)
+            self.assertEqual({"who": "芝士圆子"}, action.arguments)
+
+    def test_invalid_structured_action_falls_back_to_plain_text(self):
+        value = '<MYBOT_ACTION>{invalid json}</MYBOT_ACTION>'
+        action, content = model_reply_action(value)
+        self.assertEqual(ReplyKind.TEXT, action.kind)
+        self.assertEqual(value, content)
+
     def test_reply_transport_markers_must_occupy_the_whole_reply(self):
         action, content = model_reply_action(
             "给你说一句 <MYBOT_VOICE>晚安</MYBOT_VOICE>"
@@ -336,12 +398,13 @@ class ReplyPlanningTests(unittest.TestCase):
         self.assertIn("<MYBOT_STICKER", prompt)
         self.assertIn("<MYBOT_VOICE>", prompt)
         self.assertIn("<MYBOT_IMAGE:", prompt)
-        self.assertIn("<MYBOT_DELEGATE_CODEX>", prompt)
+        self.assertIn('"type":"cli_task|mcp_tool|skill_task"', prompt)
+        self.assertIn('"type":"reference"', prompt)
         self.assertIn("不是固定话术", prompt)
 
         disabled = model_reply_mode_instruction(voice_enabled=False, codex_enabled=False)
         self.assertIn("语音当前不可用", disabled)
-        self.assertIn("CLI 工具当前不可用", disabled)
+        self.assertIn("CLI/MCP/Skill 工具当前不可用", disabled)
 
     def test_unspecified_sticker_uses_recent_conversation_semantics(self):
         self.assertEqual(

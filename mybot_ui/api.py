@@ -75,8 +75,6 @@ def command_timeout(function: str) -> int:
         return 180
     if function == "GetVisibleConversations":
         return 10
-    if function == "PauseMessageListener":
-        return 5
     return 30
 
 
@@ -126,14 +124,33 @@ class Gateway:
 
     def close(self) -> None:
         if self._loop and self._loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(self._disconnect(), self._loop)
-            future.result(timeout=2)
+            future = asyncio.run_coroutine_threadsafe(self._shutdown(), self._loop)
+            try:
+                future.result(timeout=3)
+            except Exception as exc:
+                operations.event("gateway", "ShutdownFailed", {
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread.is_alive():
             self._thread.join(timeout=2)
         process_lock = getattr(self, "_process_command_lock", None)
         if process_lock is not None:
             process_lock.close()
+
+    async def _shutdown(self) -> None:
+        """Drain the private event loop before its thread is stopped."""
+        current = asyncio.current_task()
+        tasks = [
+            task
+            for task in asyncio.all_tasks()
+            if task is not current and not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await self._disconnect()
 
     def add_listener(self, callback: Callable[[dict[str, Any]], None]) -> None:
         self._listeners.append(callback)
@@ -350,6 +367,31 @@ class Gateway:
             self._pending.pop(request_id, None)
             result = GatewayResult(False, error=str(exc) or type(exc).__name__)
             operations.finish(span, success=False, error=result.error)
+            if isinstance(exc, TimeoutError):
+                # A timed-out SDK call may still be blocking WeChat's UIA
+                # thread. Close this command channel before releasing the
+                # serialization lock so queued calls cannot compound it.
+                self.connected = False
+                try:
+                    await self._disconnect()
+                except Exception as disconnect_error:
+                    operations.event("gateway", "TimeoutDisconnectFailed", {
+                        "function": function,
+                        "error": f"{type(disconnect_error).__name__}: {disconnect_error}",
+                    })
+                timeout_event = {
+                    "type": "command_timeout",
+                    "function": function,
+                    "data": result.error,
+                }
+                for listener in tuple(getattr(self, "_listeners", ())):
+                    try:
+                        listener(timeout_event)
+                    except Exception as listener_error:
+                        operations.event("gateway", "TimeoutListenerFailed", {
+                            "function": function,
+                            "error": f"{type(listener_error).__name__}: {listener_error}",
+                        })
             return result
 
     def _record_outgoing_echo(
@@ -397,8 +439,6 @@ class Gateway:
     def _demo_value(self, function: str, options: Any) -> Any:
         if function in {"GetAllConversations", "GetVisibleConversationTitles"}:
             return ["产品讨论群", "文件传输助手", "林然", "AI 自动化测试群"]
-        if function == "GetAllChatGroups":
-            return ["产品讨论群", "AI 自动化测试群"]
         if function == "GetVisibleConversations":
             return [{"title": name, "unreadCount": count, "avatar": ""} for name, count in [("产品讨论群", 3), ("林然", 0), ("文件传输助手", 1)]]
         if function in {"GetAllFriendNames", "GetAllFriends"}:

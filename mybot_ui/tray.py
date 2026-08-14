@@ -6,6 +6,8 @@ from PySide6.QtCore import QEvent, QObject
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QSystemTrayIcon
 
+from .automation_ids import set_automation_id
+
 
 TRAY_MENU_STYLE = """
 QMenu {
@@ -72,14 +74,18 @@ class TrayController(QObject):
         self.tray_icon.setToolTip("MyBot2")
         self.menu = QMenu()
         self.menu.setObjectName("trayMenu")
+        set_automation_id(self.menu, "MyBot.Tray.menu")
         self.menu.setStyleSheet(TRAY_MENU_STYLE)
         self.show_action = self.menu.addAction("显示主界面")
+        self._mark_action(self.show_action, "MyBot.Tray.show_action")
         self.show_action.triggered.connect(self.show_window)
         self.menu.addSeparator()
         self.restart_action = self.menu.addAction("重启")
+        self._mark_action(self.restart_action, "MyBot.Tray.restart_action")
         self.restart_action.setEnabled(self._restart_callback is not None)
         self.restart_action.triggered.connect(self.restart_application)
         self.close_action = self.menu.addAction("关闭")
+        self._mark_action(self.close_action, "MyBot.Tray.close_action")
         self.close_action.triggered.connect(self.quit_application)
         self.exit_action = self.close_action
         self.tray_icon.setContextMenu(self.menu)
@@ -87,6 +93,11 @@ class TrayController(QObject):
         window.installEventFilter(self)
         if show_tray:
             self.tray_icon.show()
+
+    @staticmethod
+    def _mark_action(action: QAction, automation_id: str) -> None:
+        action.setObjectName(automation_id)
+        action.setProperty("mybot_automation_id", automation_id)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
         is_window_close = (

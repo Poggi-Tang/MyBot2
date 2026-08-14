@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.7.0 Beta 1 - 2026-08-14
+
+### Added
+
+- Added a Python UIA conversation scanner and message listener with OCR-assisted message analysis and quote-menu control.
+- Added a mandatory first-connection conversation initialization scan so group/private metadata is validated on every process start.
+- Added one-click NewAPI connection import with project-local defaults for chat, reasoning and image models.
+- Added stable MyBot AutomationIDs and a companion easyuiauto Skill for precise UI control.
+- Added modular backend, routing, controller and conversation-action service boundaries.
+
+### Changed
+
+- Moved conversation type detection and message listening away from the legacy .NET path to the Python UIA implementation.
+- Quote replies now locate the target message, open WeChat's context menu and select the OCR-recognized quote command.
+- Automatic conversation recovery waits for initialization and title refresh before restoring listeners or queued work.
+
+### Fixed
+
+- Prevented missing or stale WeChat title controls from silently classifying conversations as private.
+- Retried transient conversation switches without consuming unread-message state or losing queued replies.
+- Fixed quote and realtime reply failures while WeChat rebuilds the active conversation panel.
+- Prevented non-visual creation requests such as writing poems, plans or copy from being routed to image generation.
+- Improved rapid-message intake, reference handling, attachment routing and restart behavior.
+
 ## 2.6.1 Beta 1 - 2026-08-12
 
 ### Changed

@@ -37,7 +37,6 @@ class _FakeWebSocket:
 class GatewayConnectionTests(unittest.IsolatedAsyncioTestCase):
     def test_preview_command_uses_short_stall_detection_timeout(self):
         self.assertEqual(10, command_timeout("GetVisibleConversations"))
-        self.assertEqual(5, command_timeout("PauseMessageListener"))
         self.assertEqual(180, command_timeout("ScanAllStickers"))
         self.assertEqual(30, command_timeout("SendMessage"))
 
@@ -104,6 +103,60 @@ class GatewayConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await second).ok)
         self.assertEqual(["first", "second"], sent)
 
+    async def test_sdk_timeout_disconnects_before_next_queued_command(self):
+        gateway = Gateway.__new__(Gateway)
+        gateway.uri = "ws://127.0.0.1:5177/ws"
+        gateway.demo_mode = False
+        gateway.connected = True
+        gateway._pending = {}
+        gateway._command_lock = None
+        gateway._receiver = None
+        timeout_events = []
+        gateway._listeners = [timeout_events.append]
+        gateway._process_command_lock = SimpleNamespace(
+            try_acquire=lambda: True,
+            release=lambda: None,
+        )
+        timeout_started = asyncio.Event()
+        release_timeout = asyncio.Event()
+        sent = []
+
+        class CallWebSocket:
+            async def send(self, payload: str) -> None:
+                outer = json.loads(payload)
+                package = json.loads(outer["data"])
+                sent.append(package["func_Name"])
+
+            async def close(self) -> None:
+                sent.append("closed")
+
+        async def wait_until_released(_pending, *, timeout):
+            timeout_started.set()
+            await release_timeout.wait()
+            raise asyncio.TimeoutError
+
+        gateway._ws = CallWebSocket()
+        with patch("mybot_ui.api.asyncio.wait_for", side_effect=wait_until_released):
+            first = asyncio.create_task(
+                gateway._call("account", "first", timeout_seconds=1)
+            )
+            await timeout_started.wait()
+            second = asyncio.create_task(
+                gateway._call("account", "second", timeout_seconds=1)
+            )
+            await asyncio.sleep(0)
+            release_timeout.set()
+            first_result, second_result = await asyncio.gather(first, second)
+
+        self.assertFalse(first_result.ok)
+        self.assertFalse(second_result.ok)
+        self.assertFalse(gateway.connected)
+        self.assertIsNone(gateway._ws)
+        self.assertEqual(["first", "closed"], sent)
+        self.assertIn("WebSocket Server", second_result.error)
+        self.assertEqual("command_timeout", timeout_events[0]["type"])
+        self.assertEqual("first", timeout_events[0]["function"])
+
     async def test_disconnect_failure_completes_pending_commands(self):
         gateway = Gateway.__new__(Gateway)
         gateway._pending = {}
@@ -154,6 +207,26 @@ class GatewayConnectionTests(unittest.IsolatedAsyncioTestCase):
             DEFAULT_WEBSOCKET_MAX_MESSAGE_BYTES,
             connect.await_args.kwargs["max_size"],
         )
+
+    async def test_shutdown_cancels_unfinished_private_loop_tasks(self):
+        gateway = Gateway.__new__(Gateway)
+        gateway.uri = "ws://127.0.0.1:5177/ws"
+        gateway.connected = False
+        gateway._receiver = None
+        gateway._ws = None
+        gateway._pending = {}
+        started = asyncio.Event()
+
+        async def unfinished() -> None:
+            started.set()
+            await asyncio.Future()
+
+        task = asyncio.create_task(unfinished())
+        await started.wait()
+
+        await gateway._shutdown()
+
+        self.assertTrue(task.cancelled())
 
     async def test_named_sdk_mutex_serializes_another_process(self):
         lock = SdkCommandMutex()

@@ -5,8 +5,9 @@ import re
 import time
 import unicodedata
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+import json
 
 
 AUTO_REPLY_DELIMITER = "<MYBOT_SPLIT>"
@@ -25,6 +26,10 @@ MODEL_VOICE_PATTERN = re.compile(
 )
 MODEL_IMAGE_PATTERN = re.compile(
     r"^<MYBOT_IMAGE(?::([^>]{1,500}))?>$",
+    re.IGNORECASE | re.DOTALL,
+)
+MODEL_ACTION_PATTERN = re.compile(
+    r"^<MYBOT_ACTION>\s*(\{.*\})\s*</MYBOT_ACTION>$",
     re.IGNORECASE | re.DOTALL,
 )
 TRAILING_MODEL_ARTIFACT_PATTERN = re.compile(
@@ -47,6 +52,11 @@ SOURCE_TRAILER_PATTERN = re.compile(
     r"(?:数据源|观测时间)[：:].*$|这是\s*wttr\.in.*$",
     re.IGNORECASE | re.MULTILINE,
 )
+VISUAL_OUTPUT_PATTERN = re.compile(
+    r"(?:图片|图像|照片|海报|插画|头像|壁纸|封面|卡片|贺卡|表情包|"
+    r"漫画|绘画|画面|logo)",
+    re.IGNORECASE,
+)
 
 
 class AutoReplySegmentsError(ValueError):
@@ -55,16 +65,26 @@ class AutoReplySegmentsError(ValueError):
 
 class ReplyKind(str, Enum):
     TEXT = "text"
+    REFERENCE = "reference"
     IMAGE = "image"
+    IMAGE_EDIT = "image_edit"
     VOICE = "voice"
     EMOJI = "emoji"
     STICKER = "sticker"
+    FILE = "file"
+    TAP = "tap"
+    SDK_TOOL = "sdk_tool"
+    MCP_TOOL = "mcp_tool"
+    SKILL_TASK = "skill_task"
+    CLI_TASK = "cli_task"
 
 
 @dataclass(frozen=True)
 class ReplyAction:
     kind: ReplyKind
     argument: str = ""
+    function: str = ""
+    arguments: dict = field(default_factory=dict)
 
 
 class ListenerMessageCursor:
@@ -325,19 +345,27 @@ def group_reply_trigger(
 def requested_action(text: str) -> ReplyAction:
     value = _strip_chat_mentions(re.sub(r"\s+", " ", text).strip())
     lowered = value.casefold()
+    if re.search(r"(?:引用|带上引用|引用着|引用一下).{0,16}(?:回复|回答|回我|说)", value):
+        return ReplyAction(ReplyKind.REFERENCE)
+    if re.search(r"(?:拍一拍|拍拍)(?:我|一下|我一下)?(?:[。！？!?]|$)", value):
+        return ReplyAction(ReplyKind.TAP)
     for prefix in ("/image", "生成图片", "生成一张图", "画图", "画一张", "生图"):
         if lowered.startswith(prefix.casefold()):
             prompt = value[len(prefix) :].lstrip("：: ，,")
             return ReplyAction(ReplyKind.IMAGE, prompt or "一张适合微信聊天分享的图片")
 
     natural_image = re.fullmatch(
-        r"(?:请|麻烦)?(?:你)?(?:帮我|给我)?(?:画|生成|制作|做)"
+        r"(?:请|麻烦)?(?:你)?(?:帮我|给我)?(?P<verb>画|生成|制作|做)"
         r"(?P<prompt>.+?)(?:给我|发给我|让我看看)?[。！？!?]?",
         value,
     )
     if natural_image:
-        prompt = _clean_image_prompt(natural_image.group("prompt"))
-        if prompt:
+        raw_prompt = natural_image.group("prompt")
+        prompt = _clean_image_prompt(raw_prompt)
+        if prompt and (
+            natural_image.group("verb") == "画"
+            or VISUAL_OUTPUT_PATTERN.search(raw_prompt)
+        ):
             return ReplyAction(ReplyKind.IMAGE, prompt)
 
     send_image = re.fullmatch(
@@ -487,6 +515,24 @@ def model_sticker_request(text: str) -> str | None:
 def model_reply_action(text: str) -> tuple[ReplyAction, str]:
     """Parse the model's transport decision while keeping plain text compatible."""
     value = str(text).strip()
+    structured = MODEL_ACTION_PATTERN.fullmatch(value)
+    if structured is not None:
+        try:
+            payload = json.loads(structured.group(1))
+            action_type = ReplyKind(str(payload.get("type") or "").strip().casefold())
+            content = str(payload.get("content") or "").strip()
+            function = str(payload.get("function") or "").strip()
+            arguments = payload.get("arguments")
+            if not isinstance(arguments, dict):
+                arguments = {}
+            return ReplyAction(
+                action_type,
+                str(payload.get("argument") or "").strip(),
+                function,
+                arguments,
+            ), content
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return ReplyAction(ReplyKind.TEXT), value
     sticker = model_sticker_request(value)
     if sticker is not None:
         return ReplyAction(ReplyKind.STICKER, sticker), ""
@@ -503,29 +549,47 @@ def model_reply_action(text: str) -> tuple[ReplyAction, str]:
     return ReplyAction(ReplyKind.TEXT), value
 
 
-def model_reply_mode_instruction(*, voice_enabled: bool, codex_enabled: bool) -> str:
+def model_reply_mode_instruction(
+    *,
+    voice_enabled: bool,
+    codex_enabled: bool,
+    sdk_tools: str = "",
+) -> str:
     """Describe available reply transports without prescribing conversational wording."""
     modes = [
         "先理解当前消息、最近对话、人设和关系，再同时决定回复内容与本次发送方式。",
         "可用方式及严格输出格式：",
         "1. 文字：直接输出自然回复；需要分成多条时仅用 <MYBOT_SPLIT> 分隔。",
         "2. 收藏或自定义表情包：仅输出 <MYBOT_STICKER>；需要指定风格时仅输出 <MYBOT_STICKER:关键词>。",
+        "3. 引用当前消息回复：仅输出 <MYBOT_ACTION>{\"type\":\"reference\",\"content\":\"回复内容\"}</MYBOT_ACTION>。",
     ]
     if voice_enabled:
         modes.append(
-            "3. 语音：仅输出 <MYBOT_VOICE>适合直接说出口的完整回复</MYBOT_VOICE>。"
+            "4. 语音：仅输出 <MYBOT_VOICE>适合直接说出口的完整回复</MYBOT_VOICE>。"
         )
     else:
-        modes.append("3. 语音当前不可用，不得选择语音。")
+        modes.append("4. 语音当前不可用，不得选择语音。")
     modes.append(
-        "4. 生成新图片：仅在对方确实想要生成图片时输出 <MYBOT_IMAGE:完整画面要求>。"
+        "5. 生成新图片：仅在对方确实想要生成图片时输出 <MYBOT_IMAGE:完整画面要求>。"
     )
+    modes.extend((
+        "6. 图片编辑、文件、拍一拍和 SDK 功能统一使用严格动作 JSON："
+        "<MYBOT_ACTION>{\"type\":\"image_edit|file|tap|sdk_tool\",\"content\":\"可选回复\","
+        "\"argument\":\"可选参数\",\"function\":\"SDK函数名\",\"arguments\":{}}</MYBOT_ACTION>。",
+        "file 的 argument 只能填写当前会话中已经收到的附件文件名，不得填写或猜测路径。",
+        "sdk_tool 必须使用下面目录中 action_type=sdk_tool 的函数名并完整提供 required 参数；"
+        "文字、语音、文件、表情、表情包和拍一拍必须使用各自类型，不得用 sdk_tool 绕过；"
+        "不得猜测路径、联系人、群名或其他参数。",
+    ))
+    if sdk_tools:
+        modes.append("SDK 类型目录（function|action_type|required|risk|test_kind）：\n" + sdk_tools)
     if codex_enabled:
         modes.append(
-            "5. 工具任务：需要实时信息、联网、代码、文件、终端、调试或研究时，仅输出 <MYBOT_DELEGATE_CODEX>。"
+            "7. CLI、MCP 或 Skill 工具任务：分别仅输出 "
+            "<MYBOT_ACTION>{\"type\":\"cli_task|mcp_tool|skill_task\",\"argument\":\"要完成的任务\"}</MYBOT_ACTION>。"
         )
     else:
-        modes.append("5. CLI 工具当前不可用，不得选择工具任务。")
+        modes.append("7. CLI/MCP/Skill 工具当前不可用，不得选择工具任务。")
     modes.extend((
         "选择原则：默认使用文字；语音只在对方明确或含蓄想听语音，或当前情绪和内容明显更适合说出来时使用；"
         "表情包只在单个表情比文字更自然时使用，不要为了展示能力而使用；生成图片和工具任务必须有真实意图。",

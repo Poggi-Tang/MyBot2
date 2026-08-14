@@ -103,8 +103,17 @@ namespace WeChatAuto.Components
 		internal (bool success, Window win) IsOpenMomentsWin(UIA3Automation automation)
 		{
 			var desktop = automation.GetDesktop();
-			var winRetry = Retry.WhileNull(() => desktop.FindFirstChild(cf => cf.ByProcessId(this._Client.MainWindow.Properties.ProcessId).And(cf.ByName("朋友圈")).And(cf.ByAutomationId("SNSWindow"))), TimeSpan.FromSeconds(2), TimeSpan.FromMilliseconds(200));
-			return (winRetry.Success, winRetry.Result.AsWindow());
+			// WeChat 4.x can expose the Moments top-level window with the generic
+			// localized title "微信". AutomationId remains stable across versions.
+			var winRetry = Retry.WhileNull(
+				() => desktop.FindFirstChild(cf => cf
+					.ByProcessId(this._Client.MainWindow.Properties.ProcessId)
+					.And(cf.ByAutomationId("SNSWindow"))
+					.And(cf.ByControlType(ControlType.Window))),
+				TimeSpan.FromSeconds(4),
+				TimeSpan.FromMilliseconds(200));
+			var window = winRetry.Success ? winRetry.Result?.AsWindow() : null;
+			return (window != null, window);
 		}
 		/// <summary>
 		/// 关闭朋友圈

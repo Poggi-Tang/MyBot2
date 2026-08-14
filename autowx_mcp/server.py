@@ -22,13 +22,6 @@ DEFAULT_GATEWAY_URL = "ws://127.0.0.1:5177/ws"
 CONFIRMATION_TTL_SECONDS = 120
 READ_ONLY_RISK = "只读"
 LISTENER_OWNER_FUNCTIONS = {
-    "AddMessageListener",
-    "PauseMessageListener",
-    "ResumeMessageListener",
-    "AddMessageListener_With_Time",
-    "AddMessageListener_With_Range",
-    "AddListeningFriend",
-    "RemoveListeningFriend",
     "AddFriendRequestAutoAcceptListener",
     "PauseNewFriendListener",
     "ResumeNewFriendListener",
@@ -55,6 +48,7 @@ def _text_result(value: Any, *, is_error: bool = False) -> dict[str, Any]:
 def _function_metadata(spec: ToolSpec) -> dict[str, Any]:
     return {
         "function": spec.function,
+        "action_type": spec.action_type,
         "name": spec.name,
         "category": spec.category,
         "description": spec.description,
@@ -193,6 +187,7 @@ class AutoWxService:
         spec = self._validate_call(function, arguments)
         result = {
             "function": function,
+            "action_type": spec.action_type,
             "risk": spec.risk,
             "test_kind": spec.test_kind,
             "arguments_preview": _redact_options(arguments),
@@ -275,6 +270,7 @@ class AutoWxService:
             "ok": True,
             "account": selected_account,
             "function": function,
+            "action_type": spec.action_type,
             "risk": spec.risk,
             "value": _redact_options(result.value),
         }

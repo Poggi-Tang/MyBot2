@@ -11,7 +11,7 @@ from mybot_ui.chat_engine import IncomingMessage
 
 
 class MessageReferenceTests(unittest.TestCase):
-    def test_send_message_serializes_sdk_chat_reference(self):
+    def test_send_message_routes_reference_to_python_only(self):
         reference = build_message_reference(
             "芝士圆子",
             "你看这个问题",
@@ -23,11 +23,28 @@ class MessageReferenceTests(unittest.TestCase):
             {"who": "芝士圆子", "message": "我看到了", "refer": reference},
         )
 
-        payload = json.loads(options["refer"])
+        self.assertEqual("null", options["refer"])
+        payload = options["_mybot_reference"]
         self.assertEqual("2026-08-09", payload["date"])
         self.assertEqual("芝士圆子", payload["message"]["who"])
         self.assertEqual("你看这个问题", payload["message"]["message"])
         self.assertEqual("2026年8月9日 14:05", payload["message"]["send_date_time"])
+
+    def test_reference_accepts_preview_recovery_identity_suffix(self):
+        reference = build_message_reference(
+            "对方",
+            "引用我这条消息回复我",
+            "2026-08-13T08:25:59|visible:42-4132674-4--2147451783",
+        )
+
+        self.assertIsNotNone(reference)
+        options = build_options(
+            "SendMessage",
+            {"who": "芝士圆子", "message": "收到", "refer": reference},
+        )
+        self.assertEqual("null", options["refer"])
+        payload = options["_mybot_reference"]
+        self.assertEqual("2026-08-13T08:25:59", payload["message"]["date_time"])
 
     def test_smart_reference_quotes_groups_and_parallel_private_messages(self):
         incoming = IncomingMessage(

@@ -468,49 +468,64 @@ namespace WeChatAuto.Components
             });
             if (header == null || root == null)
                 return null;
-
-            Mouse.Position = root.BoundingRectangle.SafeRandomPoint();
-            SupperMouseKey.Scroll(-30);
-            RandomWait.Wait(250, 450);
-            root = __FindMessageListRoot(automation);
-            if (root == null)
-                return null;
-
-            for (var page = 0; page < 5; page++)
+            try
             {
-                var imageItem = __FindLatestVisibleImageBubble(root);
-                ImageCaptureOperationLog.Write(operationId, "image_page_scanned", stopwatch, imageItem != null, new Dictionary<string, object>
-                {
-                    ["page"] = page,
-                    ["item_name"] = imageItem?.Name ?? string.Empty,
-                    ["item_class"] = imageItem?.ClassName ?? string.Empty,
-                    ["item_bounds"] = __DescribeBounds(imageItem)
-                });
-                if (imageItem != null)
-                {
-                    var message = new SimpleMessageBubble
-                    {
-                        Who = "对方",
-                        Message = "[图片]",
-                        SendDate = DateTime.Now,
-                        MessageType = imageItem.Name.StartsWith("动画表情") ? MessageType.动画表情 : MessageType.图片
-                    };
-                    var ratio = DpiHelper.GetScaleForWindow(_Client.MainWindow.Properties.NativeWindowHandle);
-                    __FetchImage(message, imageItem, new MessageMonitorOptions { FetchImage = true }, ratio, _Client.MainWindow, root, header, true);
-                    if (!string.IsNullOrWhiteSpace(message.ImageFile) && File.Exists(message.ImageFile))
-                        return message;
-                }
+                Mouse.Position = root.BoundingRectangle.SafeRandomPoint();
+                SupperMouseKey.Scroll(-30);
+                RandomWait.Wait(250, 450);
+                root = __FindMessageListRoot(automation);
+                if (root == null)
+                    return null;
 
-                if (page < 4)
+                for (var page = 0; page < 5; page++)
                 {
-                    MouseScrollHelper.UpStep(root.BoundingRectangle.SafeRandomPoint(), 3);
-                    RandomWait.Wait(150, 350);
-                    root = __FindMessageListRoot(automation);
-                    if (root == null)
-                        break;
+                    var imageItem = __FindLatestVisibleImageBubble(root);
+                    ImageCaptureOperationLog.Write(operationId, "image_page_scanned", stopwatch, imageItem != null, new Dictionary<string, object>
+                    {
+                        ["page"] = page,
+                        ["item_name"] = imageItem?.Name ?? string.Empty,
+                        ["item_class"] = imageItem?.ClassName ?? string.Empty,
+                        ["item_bounds"] = __DescribeBounds(imageItem)
+                    });
+                    if (imageItem != null)
+                    {
+                        var message = new SimpleMessageBubble
+                        {
+                            Who = "对方",
+                            Message = "[图片]",
+                            SendDate = DateTime.Now,
+                            MessageType = imageItem.Name.StartsWith("动画表情") ? MessageType.动画表情 : MessageType.图片
+                        };
+                        var ratio = DpiHelper.GetScaleForWindow(_Client.MainWindow.Properties.NativeWindowHandle);
+                        __FetchImage(message, imageItem, new MessageMonitorOptions { FetchImage = true }, ratio, _Client.MainWindow, root, header, true);
+                        if (!string.IsNullOrWhiteSpace(message.ImageFile) && File.Exists(message.ImageFile))
+                            return message;
+                    }
+
+                    if (page < 4)
+                    {
+                        MouseScrollHelper.UpStep(root.BoundingRectangle.SafeRandomPoint(), 3);
+                        RandomWait.Wait(150, 350);
+                        root = __FindMessageListRoot(automation);
+                        if (root == null)
+                            break;
+                    }
+                }
+                return null;
+            }
+            finally
+            {
+                // A failed image context menu can leave WeChat's XMenu active
+                // and make the conversation list appear unclickable to UIA.
+                SupperMouseKey.TypeSimultaneously(VirtualKeyShort.ESC);
+                _Client.MainWindow.Focus();
+                var currentRoot = __FindMessageListRoot(automation);
+                if (currentRoot != null)
+                {
+                    Mouse.Position = currentRoot.BoundingRectangle.SafeRandomPoint();
+                    SupperMouseKey.Scroll(-30);
                 }
             }
-            return null;
         }
 
         private bool __OpenConversationCore(UIA3Automation automation, string who)
@@ -676,7 +691,6 @@ namespace WeChatAuto.Components
                         await this._Client.SwitchNavigation(NavigationType.微信);
                     }
                     this.pauseTime = Random.Shared.Next(6 * 60 * 1_000, 10 * 60 * 1_000);   //重新计算下一次停顿时间.
-                    //await WeChatInvoker.Call(__FixedSideEffect);  //暂时取消副作用，因为有些打开的子窗口监听是不需要关闭的.
                     System.Diagnostics.Debug.WriteLine($"===== 运行风控行为代码结束 ======");
                 }
             }
@@ -684,25 +698,6 @@ namespace WeChatAuto.Components
             {
                 _Logger.Error("消息监听中运行预防风控行为出错:" + ex.ToString());
             }
-        }
-
-        /// <summary>
-        /// 如果有副作用，如：打开的临时窗口等,则关闭他们
-        /// </summary>
-        /// <param name="automation"></param>
-        private void __FixedSideEffect(UIA3Automation automation)
-        {
-            var desktop = automation.GetDesktop();
-            var sideEffectWin = desktop.FindAllChildren(cf => (cf.ByControlType(ControlType.Window).Or(cf.ByControlType(ControlType.Pane))).And(cf.ByProcessId(this._Client.MainWindow.Properties.ProcessId)));
-            var closeWin = sideEffectWin.Where(u => !u.Properties.RuntimeId.Value.SequenceEqual(this._Client.MainWindow.Properties.RuntimeId.Value)).ToList();
-            foreach (var win in closeWin)
-            {
-                if (win is Window)
-                {
-                    win.AsWindow().Close();
-                }
-            }
-
         }
 
         private void AddMessageListenerAction(UIA3Automation automation, Action<MessageContext> callBack, CancellationToken token, bool IsOpenMonitor, MessageMonitorOptions options)
@@ -819,9 +814,7 @@ namespace WeChatAuto.Components
                 {
                     if (item.IsDoNotDisturb || !_MonitorList.ContainsKey(item.ConversationTitle))
                         return false;
-                    if (item.NotReadNumbr > 0)
-                        return true;
-                    if (options?.MonitorReadConversations != true)
+                    if (item.NotReadNumbr <= 0 && options?.MonitorReadConversations != true)
                         return false;
                     var element = elements.FirstOrDefault(candidate => candidate.GetName().Trim() == item.ConversationTitle);
                     return __ConversationChanged(item.ConversationTitle, element);
@@ -879,9 +872,11 @@ namespace WeChatAuto.Components
                 {
                     if (item.IsDoNotDisturb)
                         return false;
-                    if (item.NotReadNumbr > 0)
-                        return true;
-                    if (IsOpenMonitor || options?.MonitorReadConversations != true || !_MonitorList.ContainsKey(item.ConversationTitle))
+                    if (IsOpenMonitor)
+                        return item.NotReadNumbr > 0;
+                    if (!_MonitorList.ContainsKey(item.ConversationTitle))
+                        return false;
+                    if (item.NotReadNumbr <= 0 && options?.MonitorReadConversations != true)
                         return false;
                     var element = elementList.FirstOrDefault(candidate => candidate.GetName().Trim() == item.ConversationTitle);
                     return __ConversationChanged(item.ConversationTitle, element);
@@ -1019,35 +1014,25 @@ namespace WeChatAuto.Components
             }
             //获取数据核心方法
             var totalSessionNewMessages = new List<SimpleMessageBubble>();
-            while (true)
+            List<SimpleMessageBubble> newMessages = _FetchMessageCore(
+                automation,
+                token,
+                clickConversionItem,
+                messageListRoot,
+                title,
+                options);
+            if (newMessages.Count > 0)
             {
-                List<SimpleMessageBubble> newMessages = _FetchMessageCore(automation, token, clickConversionItem, messageListRoot, title, options); //本次最新的消息列表
-                if (newMessages.Count > 0)
-                {
-                    MessageCacheHelper.AddTodayMessageCaches(title.Title, newMessages);  //增加进缓存.
-                    totalSessionNewMessages.AddRange(newMessages);
+                MessageCacheHelper.AddTodayMessageCaches(title.Title, newMessages);  //增加进缓存.
+                totalSessionNewMessages.AddRange(newMessages);
 
-                    //日志
-                    System.Diagnostics.Debug.WriteLine($"===== 来自 {title.Title} 的消息 ======");
-                    foreach (var item in newMessages)
-                    {
-                        System.Diagnostics.Debug.WriteLine(item.ToString());
-                    }
-                    System.Diagnostics.Debug.WriteLine($"===== 结束输出 {title.Title} 的消息 ======");
-                }
-                //检查实时会话快照
-                var oldSnapshot = _ConversationSnapshot[title.Title];
-                var newSnapshot = clickConversionItem.Name;
-                if (oldSnapshot.Equals(newSnapshot))
+                //日志
+                System.Diagnostics.Debug.WriteLine($"===== 来自 {title.Title} 的消息 ======");
+                foreach (var item in newMessages)
                 {
-                    break;
+                    System.Diagnostics.Debug.WriteLine(item.ToString());
                 }
-                System.Diagnostics.Debug.WriteLineIf(!oldSnapshot.Equals(newSnapshot), $"newSnapshot与oldSnapshot不同，准备下一轮...");
-                var pattern = @"\s*\[[\d]+条\]\s*";
-                if (Regex.IsMatch(newSnapshot, pattern))
-                {
-                    clickConversionItem.Click();
-                }
+                System.Diagnostics.Debug.WriteLine($"===== 结束输出 {title.Title} 的消息 ======");
             }
 
             //回调用户提供的方法
@@ -1109,12 +1094,15 @@ namespace WeChatAuto.Components
         private void _StabilityClick(UIA3Automation automation, CancellationToken token, AutomationElement clickConversionItem, AutomationElement messageListRoot, Button historyButton, string who)
         {
             var index = 0;
+            var stableChecks = 0;
+            string previousSnapshot = null;
             PreMove(historyButton);  //预先移动好
             var conversationRoot = this._Client.Conversations.ConversationRoot;
             AutomationElement item = null;
             while (index < WeAutomation.Config.MessageStabilityRetryNumber)
             {
                 token.ThrowIfCancellationRequested();
+                index++;
                 var items = conversationRoot.FindAllChildren(cf => cf.ByControlType(ControlType.ListItem));
                 item = items.Select(u => u.AsListBoxItem()).Where(u => u.IsSelected).FirstOrDefault();
                 if (item == null || item.BoundingRectangle.Y + item.BoundingRectangle.Height > conversationRoot.BoundingRectangle.Y + conversationRoot.BoundingRectangle.Height)   //会话列表中被挤下去.
@@ -1129,27 +1117,25 @@ namespace WeChatAuto.Components
                             break;
                         count++;
                     }
-                    index = 0;
                     continue;
                 }
-                string[] aryCotent = item.Name.Trim().Split('\n');
-                var match = Regex.Match(aryCotent[1], @"\[([\d]*)条\]");
-                if (match.Success)
+                var currentSnapshot = item.Name;
+                if (string.Equals(previousSnapshot, currentSnapshot, StringComparison.Ordinal))
                 {
-                    item.Click();
-                    index = 0;
-                    if (item != null)
-                    {
-                        _ConversationSnapshot[who] = item.Name;
-                    }
-                    continue;
+                    stableChecks++;
+                    if (stableChecks >= 1)
+                        break;
                 }
-
+                else
+                {
+                    previousSnapshot = currentSnapshot;
+                    stableChecks = 0;
+                }
                 RandomWait.Wait(100, 600);
                 PreMove(historyButton);  //预先移动好
-                index++;
             }
-            //保存会话最后的快照，如果执行结束后，检查与快照不一致，又重新一轮.
+            // 只观察会话是否稳定，不重复点击当前会话。保存点击聊天记录前的
+            // 快照，让等待期间到达的新消息在下一轮监听中继续被发现。
             var checkItemsRetry = Retry.WhileNull(() => conversationRoot.FindAllChildren(cf => cf.ByControlType(ControlType.ListItem)), TimeSpan.FromSeconds(2), TimeSpan.FromMilliseconds(200));
             if (checkItemsRetry.Success)
             {
@@ -1159,6 +1145,7 @@ namespace WeChatAuto.Components
                 {
                     _ConversationSnapshot[who] = item.Name;
                 }
+                PreMove(historyButton);
                 SupperMouseKey.LeftClick();
                 RandomWait.Wait(300, 900);
                 SupperMouseKey.MoveTo(historyButton.BoundingRectangle.Center().Confusion(5, 5));
@@ -1906,8 +1893,14 @@ namespace WeChatAuto.Components
                 _ConversationSnapshot[title] = item.Name;
                 return false;
             }
-            if (string.Equals(previous, item.Name, StringComparison.Ordinal))
+            if (string.Equals(
+                __NormalizeConversationSnapshot(previous),
+                __NormalizeConversationSnapshot(item.Name),
+                StringComparison.Ordinal))
+            {
+                _ConversationSnapshot[title] = item.Name;
                 return false;
+            }
             if (_OutgoingPreviewEchoes.TryGetValue(title, out var outgoing))
             {
                 if (outgoing.ExpiresAt < DateTime.UtcNow)
@@ -1928,6 +1921,11 @@ namespace WeChatAuto.Components
                 }
             }
             return true;
+        }
+
+        private static string __NormalizeConversationSnapshot(string snapshot)
+        {
+            return Regex.Replace(snapshot ?? string.Empty, @"\s*\[[\d]+条\]\s*", " ").Trim();
         }
 
         private static bool __OutgoingPreviewMatches(string preview, string message)

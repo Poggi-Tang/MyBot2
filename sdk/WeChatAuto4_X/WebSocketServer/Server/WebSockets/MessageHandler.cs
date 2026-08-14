@@ -20,7 +20,6 @@ public class MessageHandler : IDisposable
     private readonly ILogger<MessageHandler> logger;
     private CancellationTokenSource systemMonitorCts = new CancellationTokenSource();
     private CancellationTokenSource monitorCts = new CancellationTokenSource();
-    private Task? messageMonitorTask;
     private Task? groupSysMessageMonitorTask;
     private Task? newFriendsMonitorTask;
 
@@ -109,32 +108,6 @@ public class MessageHandler : IDisposable
                     var vList = await client.GetVisibleConversationTitles();
                     response.Data = JsonConvert.SerializeObject(vList);
                     break;
-                case "GetAllChatGroups":
-                    // Conversation titles do not carry a reliable group flag.
-                    // Select each conversation and inspect the chat header so
-                    // renamed groups and groups without a naming convention are
-                    // still discovered correctly.
-                    var conversationNames = await client.GetAllConversations();
-                    var groupNames = new List<string>();
-                    foreach (var conversationName in conversationNames ?? new List<string>())
-                    {
-                        if (string.IsNullOrWhiteSpace(conversationName))
-                            continue;
-                        try
-                        {
-                            if (!await client.SearchFriend(conversationName))
-                                continue;
-                            var header = await client.GetTitle();
-                            if (header != null && header.HeaderType == ChatType.群聊)
-                                groupNames.Add(string.IsNullOrWhiteSpace(header.Title) ? conversationName : header.Title);
-                        }
-                        catch (Exception ex)
-                        {
-                            logger.LogDebug(ex, "跳过无法识别的会话: {ConversationName}", conversationName);
-                        }
-                    }
-                    response.Data = JsonConvert.SerializeObject(groupNames.Distinct(StringComparer.Ordinal));
-                    break;
                 case "GetVisibleConversations":
                     var cobjList = await client.GetVisibleConversations();
                     response.Data = JsonConvert.SerializeObject(cobjList);
@@ -171,7 +144,9 @@ public class MessageHandler : IDisposable
                 case "SendMessage":
                     var sendMessageOptions = wrapper.Options;
                     var optionsMessage = JsonConvert.DeserializeObject<Dictionary<string, string>>(sendMessageOptions!);
-                    await client.SendMessage(optionsMessage!["who"], optionsMessage!["message"], JsonConvert.DeserializeObject<List<string>>(optionsMessage!["atUser"]), JsonConvert.DeserializeObject<ChatRefer>(optionsMessage!["refer"]), commandToken);
+                    // MyBot prepares quote state through Python UIA before this
+                    // call. The Server must never invoke the legacy .NET quote path.
+                    await client.SendMessage(optionsMessage!["who"], optionsMessage!["message"], JsonConvert.DeserializeObject<List<string>>(optionsMessage!["atUser"]), null, commandToken);
                     break;
                 case "SendEmoji":
                     var emojiOptions = wrapper.Options;
@@ -505,127 +480,6 @@ public class MessageHandler : IDisposable
                     });
                     await tcs.Task;
                     break;
-                case "AddMessageListener":
-                    payload = wrapper.Options!;
-                    dicPayload = JsonConvert.DeserializeObject<Dictionary<string, string>>(payload)!;
-                    nickNameList = JsonConvert.DeserializeObject<List<string>>(dicPayload["nick_names"]);
-                    var is_open_monitor = bool.Parse(dicPayload["is_open_monitor"]);
-                    MessageMonitorOptions? addMessageOtpions = null;
-                    if (dicPayload["options"] != null)
-                    {
-                        addMessageOtpions = JsonConvert.DeserializeObject<MessageMonitorOptions>(dicPayload["options"].ToString())!;
-                    }
-                    TaskCompletionSource messageTcs = new TaskCompletionSource();
-                    cancellationToken = monitorCts.Token;
-                    if (token != default)
-                    {
-                        cancellationToken = CancellationTokenSource.CreateLinkedTokenSource(monitorCts.Token, token).Token;
-                    }
-                    this.messageMonitorTask = Task.Run(async () =>
-                    {
-                        messageTcs.SetResult();
-                        Action<MessageContext> callBack = async (context) =>
-                        {
-                            PrepareMessageMedia(context.NewMessages);
-                            Dictionary<string, string> result = new Dictionary<string, string>();
-                            result["new_message"] = JsonConvert.SerializeObject(context.NewMessages);
-                            result["history_messages"] = JsonConvert.SerializeObject(context.HistoryMessages);
-                            var header = await context.Client.GetTitle();
-                            result["chat_title"] = header?.Title ?? string.Empty;
-
-                            var part_response = new RequestData
-                            {
-                                Type = "echo",
-                                RequestId = wrapper.RequestId,
-                                Data = JsonConvert.SerializeObject(result),
-                            };
-                            await wrapper!.handler!.SendAsync(part_response);
-                        };
-                        // The SDK monitor is shared by WebSocket connections. Keep it alive for
-                        // the server lifetime; each AddMessageListener call replaces its callback.
-                        await client.AddMessageListener(nickNameList, callBack, is_open_monitor, userToken: CancellationToken.None, options: addMessageOtpions);
-                    });
-                    await messageTcs.Task;
-                    break;
-                case "AddMessageListener_With_Time":
-                    payload = wrapper.Options!;
-                    dicPayload = JsonConvert.DeserializeObject<Dictionary<string, string>>(payload)!;
-                    nickNameList = JsonConvert.DeserializeObject<List<string>>(dicPayload["nick_names"]);
-                    is_open_monitor = bool.Parse(dicPayload["is_open_monitor"]);
-                    addMessageOtpions = null;
-                    if (dicPayload["options"] != null)
-                    {
-                        addMessageOtpions = JsonConvert.DeserializeObject<MessageMonitorOptions>(dicPayload["options"].ToString())!;
-                    }
-                    var start_time = TimeOnly.Parse(dicPayload["start_time"]);
-                    var end_time = TimeOnly.Parse(dicPayload["end_time"]);
-                    messageTcs = new TaskCompletionSource();
-                    cancellationToken = monitorCts.Token;
-                    if (token != default)
-                    {
-                        cancellationToken = CancellationTokenSource.CreateLinkedTokenSource(monitorCts.Token, token).Token;
-                    }
-                    this.messageMonitorTask = Task.Run(async () =>
-                    {
-                        messageTcs.SetResult();
-                        Action<MessageContext> callBack = async (context) =>
-                        {
-                            PrepareMessageMedia(context.NewMessages);
-                            Dictionary<string, string> result = new Dictionary<string, string>();
-                            result["new_message"] = JsonConvert.SerializeObject(context.NewMessages);
-                            result["history_messages"] = JsonConvert.SerializeObject(context.HistoryMessages);
-
-                            var part_response = new RequestData
-                            {
-                                Type = "echo",
-                                RequestId = wrapper.RequestId,
-                                Data = JsonConvert.SerializeObject(result),
-                            };
-                            await wrapper!.handler!.SendAsync(part_response);
-                        };
-                        await client.AddMessageListener(nickNameList, callBack, start_time, end_time, is_open_monitor, userToken: cancellationToken, options: addMessageOtpions);
-                    });
-                    await messageTcs.Task;
-                    break;
-                case "AddMessageListener_With_Range":
-                    payload = wrapper.Options!;
-                    dicPayload = JsonConvert.DeserializeObject<Dictionary<string, string>>(payload)!;
-                    nickNameList = JsonConvert.DeserializeObject<List<string>>(dicPayload["nick_names"]);
-                    is_open_monitor = bool.Parse(dicPayload["is_open_monitor"]);
-                    addMessageOtpions = null;
-                    if (dicPayload["options"] != null)
-                    {
-                        addMessageOtpions = JsonConvert.DeserializeObject<MessageMonitorOptions>(dicPayload["options"].ToString())!;
-                    }
-                    var range = JsonConvert.DeserializeObject<List<TimeOnlyRange>>(dicPayload["range"]);
-                    messageTcs = new TaskCompletionSource();
-                    cancellationToken = monitorCts.Token;
-                    if (token != default)
-                    {
-                        cancellationToken = CancellationTokenSource.CreateLinkedTokenSource(monitorCts.Token, token).Token;
-                    }
-                    this.messageMonitorTask = Task.Run(async () =>
-                    {
-                        messageTcs.SetResult();
-                        Action<MessageContext> callBack = async (context) =>
-                        {
-                            PrepareMessageMedia(context.NewMessages);
-                            Dictionary<string, string> result = new Dictionary<string, string>();
-                            result["new_message"] = JsonConvert.SerializeObject(context.NewMessages);
-                            result["history_messages"] = JsonConvert.SerializeObject(context.HistoryMessages);
-
-                            var part_response = new RequestData
-                            {
-                                Type = "echo",
-                                RequestId = wrapper.RequestId,
-                                Data = JsonConvert.SerializeObject(result),
-                            };
-                            await wrapper!.handler!.SendAsync(part_response);
-                        };
-                        await client.AddMessageListener(nickNameList, callBack, range, is_open_monitor, userToken: cancellationToken, options: addMessageOtpions);
-                    });
-                    await messageTcs.Task;
-                    break;
                 case "AddFriendRequestAutoAcceptListener":
                     payload = wrapper.Options!;
                     var newFriendOptionPrefix = JsonConvert.DeserializeObject<FriendRequestAutoAcceptOptionsPrefix>(payload)!;
@@ -653,20 +507,6 @@ public class MessageHandler : IDisposable
                         await client.AddFriendRequestAutoAcceptListener(newFriendOptions, cancellationToken);
                     });
                     await newFriendTcs.Task;
-                    break;
-                case "PauseMessageListener":
-                    await client.PauseMessageListener();
-                    break;
-                case "ResumeMessageListener":
-                    await client.ResumeMessageListener();
-                    break;
-                case "AddListeningFriend":
-                    who = wrapper.Options!;
-                    await client.AddListeningFriend(who);
-                    break;
-                case "RemoveListeningFriend":
-                    who = wrapper.Options!;
-                    await client.RemoveListeningFriend(who);
                     break;
                 case "PauseNewFriendListener":
                     await client.PauseNewFriendListener();

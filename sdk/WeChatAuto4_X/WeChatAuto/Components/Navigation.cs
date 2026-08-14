@@ -127,22 +127,15 @@ namespace WeChatAuto.Components
             }
             _logger.Trace($"找到导航按钮: {name}, AutomationId={button.AutomationId}");
 
-            if (button != null)
-            {
-                var subButton = button.FindFirstDescendant(cf => cf.ByControlType(ControlType.Button)).AsButton();
-                if (subButton != null)
-                {
-                    button = subButton;
-                }
+			if (button != null)
+			{
+				// Current WeChat 4.x exposes the navigation item itself as the
+				// actionable XTabBarItem. Its nested XImage also reports Button but
+				// does not respond to input, so always click the named outer item.
             button.HightLight();
-            var point = button.BoundingRectangle.SafeRandomPoint();
             _Client.MainWindow.Focus();
-            // Current WeChat 4.x mmui controls may expose InvokePattern but
-            // silently ignore Invoke(). Use the SDK click path so both normal
-            // mouse input and the optional KM simulator are supported.
-            SupperMouseKey.MoveTo(point);
             RandomWait.Wait(80, 180);
-            SupperMouseKey.LeftClick();
+            button.ClickEnhance(_Client.MainWindow);
             RandomWait.Wait(600, 1500);
             }
         }

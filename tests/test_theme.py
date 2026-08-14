@@ -242,6 +242,62 @@ class ThemeTests(unittest.TestCase):
             window.setProperty("mybot_explicit_exit", True)
             window.close()
 
+    def test_feature_tables_fit_the_docked_tool_width(self):
+        window = MainWindow()
+        window._dock_timer.stop()
+        try:
+            feature_window = window._tool_windows[2]
+            feature_window.resize(760, 900)
+            feature_window.show()
+            feature_page = feature_window.centralWidget()
+            tabs = next(
+                child
+                for child in feature_page.findChildren(QTabWidget)
+                if [child.tabText(index) for index in range(child.count())]
+                == ["功能列表", "MCP", "Skill"]
+            )
+            for index, table in enumerate(
+                (window.catalog_table, window.mcp_table, window.skill_table)
+            ):
+                tabs.setCurrentIndex(index)
+                self.app.processEvents()
+                visible_width = sum(
+                    table.columnWidth(column)
+                    for column in range(table.columnCount())
+                    if not table.isColumnHidden(column)
+                )
+                self.assertLessEqual(
+                    visible_width,
+                    table.viewport().width() + 1,
+                    f"{tabs.tabText(index)} table overflows the docked window",
+                )
+        finally:
+            for tool in window._tool_windows:
+                tool.setProperty("mybot_explicit_exit", True)
+                tool.close()
+            window.setProperty("mybot_explicit_exit", True)
+            window.close()
+
+    def test_settings_connection_controls_use_two_rows(self):
+        window = MainWindow()
+        window._dock_timer.stop()
+        try:
+            settings_window = window._tool_windows[-1]
+            settings_window.resize(760, 900)
+            settings_window.show()
+            self.app.processEvents()
+
+            self.assertLessEqual(abs(window.account_combo.y() - window.connect_button.y()), 1)
+            self.assertLessEqual(abs(window.uri_input.y() - window.restart_server_button.y()), 1)
+            self.assertGreater(window.uri_input.y(), window.account_combo.y())
+            self.assertLessEqual(window.update_button.geometry().right(), 760)
+        finally:
+            for tool in window._tool_windows:
+                tool.setProperty("mybot_explicit_exit", True)
+                tool.close()
+            window.setProperty("mybot_explicit_exit", True)
+            window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

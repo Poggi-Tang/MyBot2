@@ -1,0 +1,4 @@
+interface:
+  display_name: "MyBot Easy UIAuto"
+  short_description: "Control MyBot with stable AutomationIds"
+  default_prompt: "Use $mybot-easyuiauto to control MyBot through Easy UIAuto with stable AutomationIds."

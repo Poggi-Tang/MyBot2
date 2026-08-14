@@ -35,6 +35,7 @@ python -m pip install --disable-pip-version-check -r (Join-Path $appRoot "requir
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller installation failed." }
 python -m PyInstaller `
     --noconfirm --clean --onefile --windowed `
+    --uac-admin `
     --name MyBot2 `
     --icon $iconPath `
     --version-file $launcherVersionPath `
@@ -83,7 +84,7 @@ if (-not $SkipPythonRuntime) {
         "..\.."
         "import site"
     ) | Set-Content -LiteralPath (Join-Path $pythonRoot "python313._pth") -Encoding ASCII
-    & (Join-Path $pythonRoot "python.exe") -c "import PySide6, websockets, PIL; print('embedded runtime ok')"
+    & (Join-Path $pythonRoot "python.exe") -c "import PySide6, websockets, PIL, uiautomation, numpy, rapidocr, onnxruntime; print('embedded runtime ok')"
     if ($LASTEXITCODE -ne 0) { throw "Embedded Python validation failed." }
 }
 

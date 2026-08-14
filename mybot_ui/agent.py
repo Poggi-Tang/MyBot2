@@ -76,7 +76,10 @@ class DialogueAgent:
 
     def _plan_one(self, text: str) -> ToolCall | None:
         if re.search(r"(?:列出|查看|获取|刷新).*(?:群聊|群列表)", text):
-            return ToolCall("GetAllChatGroups", reason="用户要查看群聊")
+            return ToolCall(
+                "GetAllConversations",
+                reason="用户要查看会话；群聊分类由 MyBot Python UIA 扫描器维护",
+            )
         if re.search(r"(?:列出|查看|获取).*(?:好友|联系人)", text):
             return ToolCall("GetAllFriendNames", reason="用户要查看联系人")
         if re.search(r"(?:列出|查看|获取).*(?:会话|聊天列表)", text):
@@ -120,15 +123,6 @@ class DialogueAgent:
         if match:
             images = [item.strip() for item in (match.group(2) or "").split(";") if item.strip()]
             return ToolCall("AddMoments", {"content": match.group(1).strip(), "images": images}, "发布朋友圈")
-
-        if "暂停监听" in text:
-            return ToolCall("PauseMessageListener", reason="暂停消息监听")
-        if "恢复监听" in text:
-            return ToolCall("ResumeMessageListener", reason="恢复消息监听")
-        match = re.search(r"(?:启动|开始)(?:消息)?监听(?:[：:,，\s]+(.+))?", text)
-        if match:
-            targets = [item.strip() for item in re.split(r"[,，]", match.group(1) or "") if item.strip()]
-            return ToolCall("AddMessageListener", {"targets": targets, "open": not targets}, "启动消息监听")
 
         match = re.search(r"(?:搜索|定位|打开会话)\s*[：:,，]?\s*(.+)", text)
         if match:

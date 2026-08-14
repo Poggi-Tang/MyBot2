@@ -1,6 +1,7 @@
 import os
 import unittest
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -8,6 +9,7 @@ from PySide6.QtGui import QCloseEvent, QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 from launcher import launcher_command
+from main import relaunch_as_administrator_if_needed
 from mybot_ui.resources import (
     app_icon_path,
     down_arrow_path,
@@ -126,6 +128,21 @@ class TrayAndLauncherTests(unittest.TestCase):
         self.assertEqual("powershell.exe", command[0])
         self.assertEqual(str(root / "run.ps1"), command[-2])
         self.assertEqual("-SkipServer", command[-1])
+
+    def test_packaged_launcher_requests_administrator_and_source_launch_elevates(self):
+        project_root = Path(__file__).resolve().parent.parent
+        build_script = (project_root / "scripts" / "build-installer.ps1").read_text(
+            encoding="utf-8"
+        )
+        run_script = (project_root / "run.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("--uac-admin", build_script)
+        self.assertIn("Test-MyBotAdministrator", run_script)
+        self.assertIn("-Verb RunAs", run_script)
+
+    def test_non_windows_direct_python_launch_does_not_relaunch(self):
+        with mock.patch("main.sys.platform", "linux"):
+            self.assertIsNone(relaunch_as_administrator_if_needed())
 
     def test_restart_helper_waits_and_prefers_exe_with_run_cmd_fallback(self):
         command = restart_helper_command(4321, Path(r"C:\Projects\MyBot2"))[-1]

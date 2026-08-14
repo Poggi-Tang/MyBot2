@@ -39,7 +39,7 @@ class CodexRuntimeConfig:
     thread_max_tasks: int = 2
     thread_max_context_chars: int = 12_000
     thread_max_age_seconds: int = 1_800
-    model_reasoning_effort: str = "low"
+    model_reasoning_effort: str = "high"
     yolo_mode: bool = False
     restricted_workspace: bool = False
     privileged: bool = False

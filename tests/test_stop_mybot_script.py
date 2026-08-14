@@ -72,11 +72,25 @@ class StopMyBotScriptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             lock_path = root / "missing.lock"
-            process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+            entrypoint = root / "main.py"
+            entrypoint.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+            process = subprocess.Popen([sys.executable, str(entrypoint)])
             try:
                 result = self._run_helper(root, lock_path, MyBotProcessId=process.pid)
                 self.assertEqual(0, result.returncode, result.stderr)
                 process.wait(timeout=5)
+            finally:
+                self._terminate(process)
+
+    def test_explicit_unrelated_pid_is_not_stopped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock_path = root / "missing.lock"
+            process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+            try:
+                result = self._run_helper(root, lock_path, MyBotProcessId=process.pid)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIsNone(process.poll())
             finally:
                 self._terminate(process)
 

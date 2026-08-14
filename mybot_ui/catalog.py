@@ -20,12 +20,23 @@ class ToolSpec:
     required: tuple[str, ...] = ()
     test_kind: str = "safe"
 
+    @property
+    def action_type(self) -> str:
+        return {
+            "SendMessage": "text",
+            "SendEmoji": "emoji",
+            "SendSticker": "sticker",
+            "SendFile": "file",
+            "SendVoiceMessage": "voice",
+            "SendStreamingVoiceMessage": "voice",
+            "TapWho": "tap",
+        }.get(self.function, "sdk_tool")
+
 
 TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec("GetOwerInfo", "读取账号信息", "账号", "读取当前微信昵称、wxid 与头像信息"),
     ToolSpec("GetAllConversations", "列出全部会话", "会话", "扫描全部可见会话标题"),
     ToolSpec("GetVisibleConversations", "读取可见会话", "会话", "读取当前会话列表及未读、置顶状态"),
-    ToolSpec("GetAllChatGroups", "自动检索群聊", "群管理", "逐个识别会话类型并返回全部群聊"),
     ToolSpec("GetAllFriendNames", "列出联系人", "通讯录", "读取全部联系人名称"),
     ToolSpec("GetAllFriends", "读取联系人详情", "通讯录", "读取联系人资料与头像", required=("with_avatar",)),
     ToolSpec("SearchFriend", "定位联系人或群", "会话", "搜索并打开指定好友或群聊", "可逆", ("who",), "configured"),
@@ -56,9 +67,6 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec("CloseMoments", "关闭朋友圈", "朋友圈", "关闭朋友圈窗口", "可逆"),
     ToolSpec("AddMoments", "发布朋友圈", "朋友圈", "发布带图片的朋友圈", "写入", ("content", "images"), "configured"),
     ToolSpec("RemoveMoments", "删除朋友圈", "朋友圈", "按文字内容删除自己发布的朋友圈", "高风险", ("content",), "configured"),
-    ToolSpec("AddMessageListener", "启动消息监听", "监听", "监听指定对象或开放式监听消息", "可逆", test_kind="configured"),
-    ToolSpec("PauseMessageListener", "暂停消息监听", "监听", "暂停当前消息监听", "可逆"),
-    ToolSpec("ResumeMessageListener", "恢复消息监听", "监听", "恢复当前消息监听", "可逆"),
     ToolSpec("AddFriendRequestAutoAcceptListener", "自动通过好友申请", "监听", "监听并自动通过好友申请", "高风险", test_kind="manual"),
     ToolSpec("AddGroupSystemMessageListener", "监听群系统消息", "监听", "监听入群、退群等群系统事件", "可逆", test_kind="configured"),
     ToolSpec("Max", "最大化微信", "窗口", "最大化微信主窗口", "可逆"),
@@ -91,15 +99,19 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec("CreateOwnerChatGroup", "创建群聊", "群管理", "选择联系人创建自有群聊", "高风险", ("group_name", "first_who", "members"), "manual"),
     ToolSpec("ChangeChatGroupMemo", "修改群备注", "群管理", "修改群聊在会话列表中的备注", "写入", ("group_name", "new_memo"), "manual"),
     ToolSpec("AddChatGroupMemberToFriends", "添加群成员为好友", "群管理", "从群成员列表批量发起好友申请", "高风险", ("group_name", "members"), "manual"),
-    ToolSpec("AddMessageListener_With_Time", "定时消息监听", "监听", "仅在指定起止时间内监听消息", "可逆", ("start_time", "end_time"), "manual"),
-    ToolSpec("AddMessageListener_With_Range", "分时段消息监听", "监听", "按多个时间段监听消息", "可逆", ("ranges",), "manual"),
-    ToolSpec("AddListeningFriend", "增加监听对象", "监听", "向运行中的监听器添加好友或群聊", "可逆", ("who",), "manual"),
-    ToolSpec("RemoveListeningFriend", "移除监听对象", "监听", "从运行中的监听器移除好友或群聊", "可逆", ("who",), "manual"),
     ToolSpec("PauseNewFriendListener", "暂停好友申请监听", "监听", "暂停新好友申请监听", "可逆", test_kind="manual"),
     ToolSpec("ResumeNewFriendListener", "恢复好友申请监听", "监听", "恢复新好友申请监听", "可逆", test_kind="manual"),
 )
 
 TOOL_MAP = {tool.function: tool for tool in TOOLS}
+
+
+def model_sdk_tool_catalog() -> str:
+    """Compact typed SDK catalog for the model's structured action decision."""
+    return "\n".join(
+        f"{spec.function}|{spec.action_type}|{','.join(spec.required) or '-'}|{spec.risk}|{spec.test_kind}"
+        for spec in TOOLS
+    )
 
 
 def missing_arguments(function: str, arguments: dict[str, Any]) -> list[str]:
@@ -113,8 +125,11 @@ def build_message_reference(who: str, message: str, send_date: str) -> dict[str,
     """Build the ChatRefer payload expected by WeChatAuto4_X."""
     who = str(who or "").strip()
     message = str(message or "").strip()
+    # Preview recovery appends source identity after the real ISO timestamp,
+    # for example ``2026-08-13T08:25:59|visible:<bubble-id>``.
+    timestamp = str(send_date or "").split("|", 1)[0].strip()
     try:
-        sent_at = datetime.fromisoformat(str(send_date or "").replace("Z", "+00:00"))
+        sent_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
     except ValueError:
         return None
     if not who or not message:
@@ -143,8 +158,8 @@ def build_options(function: str, args: dict[str, Any]) -> Any:
     """Translate agent-friendly arguments to the legacy WebSocket payload."""
     if function in {
         "GetOwerInfo", "GetAllConversations", "GetVisibleConversations",
-        "GetAllChatGroups", "GetAllFriendNames", "GetTitle", "OpenMoments",
-        "CloseMoments", "PauseMessageListener", "ResumeMessageListener",
+        "GetAllFriendNames", "GetTitle", "OpenMoments",
+        "CloseMoments",
         "Max", "Restore", "Focus", "Pinned", "UnPinned", "GetHandler",
         "GetProcessId", "GetVisibleConversationTitles", "FocuseSenderInput",
         "GetOnlyTitle", "OpenAddFriensWin", "CloseAddFriendWin",
@@ -153,7 +168,7 @@ def build_options(function: str, args: dict[str, Any]) -> Any:
         return ""
     if function == "GetAllFriends":
         return str(bool(args.get("with_avatar", False)))
-    if function in {"SearchFriend", "LocateConversation", "OpenSubWin", "CloseSearchWindow", "RemoveFriend", "AddListeningFriend", "RemoveListeningFriend", "TapWho"}:
+    if function in {"SearchFriend", "LocateConversation", "OpenSubWin", "CloseSearchWindow", "RemoveFriend", "TapWho"}:
         if function == "TapWho":
             return {"who": args["who"], "prev_scroll_number": str(args.get("prev_scroll_number", 30))}
         return args["who"]
@@ -171,7 +186,8 @@ def build_options(function: str, args: dict[str, Any]) -> Any:
             "who": args["who"],
             "message": args["message"],
             "atUser": json.dumps(args.get("at_users", []), ensure_ascii=False),
-            "refer": json.dumps(refer, ensure_ascii=False) if refer else "null",
+            "refer": "null",
+            "_mybot_reference": refer,
         }
     if function == "SendEmoji":
         return {"who": args["who"], "emoji": str(args.get("emoji", "微笑")), "atUser": json.dumps(args.get("at_users", []), ensure_ascii=False)}
@@ -256,42 +272,6 @@ def build_options(function: str, args: dict[str, Any]) -> Any:
             "upload": json.dumps(uploads),
             "options": json.dumps(options),
         }
-    if function == "AddMessageListener":
-        targets = args.get("targets", [])
-        monitor_options = {
-            "fetch_friend_info": True,
-            "fetch_image": True,
-            "fetch_file": True,
-            "fetch_voice_chat": True,
-            "click_red_envelope": False,
-            "is_risk_prevention": False,
-            "monitor_read_conversations": bool(args.get("monitor_read_conversations", False)),
-            "file_save_directory": str(args.get("file_save_directory", "")).strip(),
-        }
-        return {
-            "nick_names": json.dumps(targets, ensure_ascii=False),
-            "is_open_monitor": bool(args.get("open", not targets)),
-            "options": json.dumps(monitor_options),
-        }
-    if function in {"AddMessageListener_With_Time", "AddMessageListener_With_Range"}:
-        targets = args.get("targets", [])
-        monitor_options = {
-            "fetch_friend_info": False,
-            "fetch_image": False,
-            "fetch_voice_chat": False,
-            "click_red_envelope": False,
-            "is_risk_prevention": True,
-        }
-        payload = {
-            "nick_names": json.dumps(targets, ensure_ascii=False),
-            "is_open_monitor": str(bool(args.get("open", not targets))),
-            "options": json.dumps(monitor_options),
-        }
-        if function == "AddMessageListener_With_Time":
-            payload.update({"start_time": args["start_time"], "end_time": args["end_time"]})
-        else:
-            payload["range"] = json.dumps(args["ranges"], ensure_ascii=False)
-        return payload
     if function == "AddGroupSystemMessageListener":
         return json.dumps(args.get("targets", []), ensure_ascii=False)
     if function == "AddFriendRequestAutoAcceptListener":

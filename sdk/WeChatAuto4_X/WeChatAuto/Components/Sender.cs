@@ -826,11 +826,16 @@ namespace WeChatAuto.Components
 
 		private bool _PopupMenu(ChatRefer refer)
 		{
-			var path = "/Group/Custom/Group/Group/Group/Custom/Custom/Custom/Group/Custom/Custom/Group/Custom/Group/Group/List[@AutomationId='chat_message_list'][@ClassName='mmui::RecyclerListView'][@Name='消息'] | /Group/Custom/Group/Group/Group/Custom/Custom/Custom/Group/Custom/Custom/Group/Custom/Group/List[@AutomationId='chat_message_list'][@ClassName='mmui::RecyclerListView'][@Name='消息']"; ;
-			var listRetry = Retry.WhileNull(() => this._Client.MainWindow.FindFirstByXPath(path), TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(200));
-			if (listRetry.Success)
+			// Reuse the semantic lookup used by GetVisibleChatMessages. WeChat's
+			// hierarchy changes between 4.1.x builds, so the legacy absolute XPath
+			// can miss a list that is already visible and readable.
+			var listRetry = Retry.WhileNull(
+				() => this._Client.ChatContent.MessageBubbleList.MessageRoot,
+				TimeSpan.FromSeconds(1),
+				TimeSpan.FromMilliseconds(100));
+			if (listRetry.Success && listRetry.Result != null)
 			{
-				var list = listRetry.Result.AsListBox();
+				var list = listRetry.Result;
 				var listItems = list.Items;
 				foreach (var item in listItems.Reverse())
 				{
@@ -1287,11 +1292,9 @@ namespace WeChatAuto.Components
 				var button = root.FindFirstDescendant(cf => cf.ByControlType(ControlType.Button).And(cf.ByName("发送表情(Alt+E)")))?.AsButton();
 				if (button == null)
 					throw new InvalidOperationException("找不到发送表情按钮。");
-				button.ClickEnhance(_Client.MainWindow);
-				RandomWait.Wait(180, 350);
+				var popup = OpenStickerPopup(automation, button);
 				try
 				{
-					var popup = FindStickerPopup(automation);
 					if (popup == null)
 						throw new InvalidOperationException("找不到微信表情面板弹窗。");
 					return this._stickerCatalog.ScanAll(popup, _Client.MainWindow);
@@ -1308,12 +1311,35 @@ namespace WeChatAuto.Components
 		{
 			var processId = _Client.MainWindow.Properties.ProcessId;
 			var popupRetry = Retry.WhileNull(
-				() => automation.GetDesktop()
-					.FindAllChildren(cf => cf.ByProcessId(processId).And(cf.ByClassName("mmui::XPopover")))
-					.FirstOrDefault(x => StickerCatalogStore.FindTabs(x).Length > 0),
-				timeout: TimeSpan.FromSeconds(2),
+				() =>
+				{
+					var desktop = automation.GetDesktop();
+					var candidates = desktop
+						.FindAllDescendants(cf => cf.ByProcessId(processId).And(cf.ByClassName("mmui::XPopover")))
+						.Concat(_Client.MainWindow.FindAllDescendants(cf => cf.ByClassName("mmui::XPopover")))
+						.Where(x => !x.IsOffscreen)
+						.GroupBy(x => x.Properties.NativeWindowHandle.ValueOrDefault)
+						.Select(x => x.First());
+					return candidates.FirstOrDefault(x => StickerCatalogStore.FindTabs(x).Length > 0);
+				},
+				timeout: TimeSpan.FromSeconds(5),
 				interval: TimeSpan.FromMilliseconds(100));
 			return popupRetry.Success ? popupRetry.Result : null;
+		}
+
+		private AutomationElement OpenStickerPopup(UIA3Automation automation, Button button)
+		{
+			for (var attempt = 0; attempt < 2; attempt++)
+			{
+				button.ClickEnhance(_Client.MainWindow);
+				RandomWait.Wait(250, 450);
+				var popup = FindStickerPopup(automation);
+				if (popup != null)
+					return popup;
+				FocuseSenderCore(automation);
+				RandomWait.Wait(120, 240);
+			}
+			return null;
 		}
 
 		/// <summary>
@@ -1334,6 +1360,8 @@ namespace WeChatAuto.Components
 			var root = this.content.Root;
 			if (root == null)
 				throw new InvalidOperationException("当前没有可用的聊天窗口。");
+			if (this._stickerCatalog.Items.Count == 0)
+				this._stickerCatalog.Reload();
 			var item = string.IsNullOrWhiteSpace(category)
 				? this._stickerCatalog.Items.FirstOrDefault(x =>
 					x.Name.Equals(nameOrHash, StringComparison.OrdinalIgnoreCase)
@@ -1344,9 +1372,7 @@ namespace WeChatAuto.Components
 			var emojiButton = root.FindFirstDescendant(cf => cf.ByControlType(ControlType.Button).And(cf.ByName("发送表情(Alt+E)")))?.AsButton();
 			if (emojiButton == null)
 				throw new InvalidOperationException("找不到发送表情按钮。");
-			emojiButton.ClickEnhance(_Client.MainWindow);
-			RandomWait.Wait(180, 350);
-			var popup = FindStickerPopup(automation);
+			var popup = OpenStickerPopup(automation, emojiButton);
 			if (popup == null)
 				throw new InvalidOperationException("找不到微信表情面板弹窗。");
 			var tab = StickerCatalogStore.FindTabs(popup)

@@ -30,6 +30,11 @@ class CodexRouterTests(unittest.TestCase):
         self.assertTrue(CodexTaskRouter.should_delegate("这个PDF帮我提取成表格"))
         self.assertTrue(CodexTaskRouter.should_delegate("整理一下收到的文档"))
 
+    def test_routes_moments_with_image_and_copywriting_to_cli(self):
+        self.assertTrue(CodexTaskRouter.should_delegate(
+            "把这张图片发朋友圈，编辑一个宣传文案"
+        ))
+
     def test_routes_file_creation_and_delivery_without_waiting_for_model(self):
         self.assertTrue(CodexTaskRouter.should_delegate(
             "你写个MyBot的功能列表，写到md文件里面，把文件发给我"
