@@ -1,3 +1,4 @@
+import ctypes
 import os
 import subprocess
 import sys
@@ -39,6 +40,14 @@ class StopMyBotScriptTests(unittest.TestCase):
             process.kill()
         process.wait(timeout=5)
 
+    @staticmethod
+    def _short_path(path: Path) -> Path:
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = ctypes.windll.kernel32.GetShortPathNameW(
+            str(path), buffer, len(buffer)
+        )
+        return Path(buffer.value) if 0 < length < len(buffer) else path
+
     def test_lock_owned_by_mybot_python_process_is_stopped(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -77,6 +86,27 @@ class StopMyBotScriptTests(unittest.TestCase):
             process = subprocess.Popen([sys.executable, str(entrypoint)])
             try:
                 result = self._run_helper(root, lock_path, MyBotProcessId=process.pid)
+                self.assertEqual(0, result.returncode, result.stderr)
+                process.wait(timeout=5)
+            finally:
+                self._terminate(process)
+
+    def test_short_install_root_matches_long_main_script(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "MyBot Long Install Root"
+            root.mkdir()
+            entrypoint = root / "main.py"
+            entrypoint.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+            short_root = self._short_path(root)
+            if str(short_root).casefold() == str(root).casefold():
+                self.skipTest("8.3 short paths are unavailable")
+            process = subprocess.Popen([sys.executable, str(entrypoint)])
+            try:
+                result = self._run_helper(
+                    short_root,
+                    root / "missing.lock",
+                    MyBotProcessId=process.pid,
+                )
                 self.assertEqual(0, result.returncode, result.stderr)
                 process.wait(timeout=5)
             finally:

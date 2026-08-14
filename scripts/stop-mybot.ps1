@@ -7,7 +7,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$resolvedRoot = [IO.Path]::GetFullPath($InstallRoot)
+$rootItem = Get-Item -LiteralPath $InstallRoot -ErrorAction Stop
+$resolvedRoot = [IO.Path]::GetFullPath($rootItem.FullName)
 if ([string]::IsNullOrWhiteSpace($LockPath)) {
     $LockPath = Join-Path $env:TEMP "mybot-2.0-ui.lock"
 }
@@ -50,6 +51,27 @@ $embeddedProcess = $processPath.Equals($embeddedPython, [StringComparison]::Ordi
 $sourceProcess = $pythonProcess -and (
     $commandLine.IndexOf($mainScript, [StringComparison]::OrdinalIgnoreCase) -ge 0
 )
+if ($pythonProcess -and -not $sourceProcess) {
+    $scriptMatch = [regex]::Match(
+        $commandLine,
+        '(?i)(?:"(?<quoted>[^\"]*[\\/]main\.py)"|(?<bare>[^\s\"]*[\\/]main\.py))'
+    )
+    if ($scriptMatch.Success) {
+        $scriptArgument = if ($scriptMatch.Groups["quoted"].Success) {
+            $scriptMatch.Groups["quoted"].Value
+        } else {
+            $scriptMatch.Groups["bare"].Value
+        }
+        $scriptItem = Get-Item -LiteralPath $scriptArgument -ErrorAction SilentlyContinue
+        if ($scriptItem) {
+            $resolvedScript = [IO.Path]::GetFullPath($scriptItem.FullName)
+            $sourceProcess = $resolvedScript.Equals(
+                $mainScript,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        }
+    }
+}
 $packagedProcess = $name.Equals("MyBot2", [StringComparison]::OrdinalIgnoreCase) -and (
     $processPath.Equals($packagedExecutable, [StringComparison]::OrdinalIgnoreCase)
 )
